@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
 :root{
   --bg:#F4F7FC;
@@ -120,6 +121,13 @@ nav.mainnav{padding:12px 10px;display:flex;flex-direction:column;gap:2px;flex:1;
 .notif-time{font-size:10.5px;color:var(--ink-faint);margin-top:2px;}
 .menu-toggle{display:none;}
 #sidebarBackdrop{display:none;}
+.sync-badge{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ink-soft);white-space:nowrap;}
+.gbtn{width:100%;display:flex;align-items:center;justify-content:center;gap:10px;padding:11px;border-radius:8px;border:1px solid var(--border-strong);background:var(--surface);color:var(--ink);font-size:14px;font-weight:600;cursor:pointer;font-family:var(--font-body);}
+.gbtn:hover{background:var(--surface-2);}
+.gbtn:disabled{opacity:0.6;cursor:wait;}
+.gbtn svg{width:18px;height:18px;}
+.auth-or{display:flex;align-items:center;gap:10px;margin:18px 0;color:var(--ink-faint);font-size:11.5px;}
+.auth-or::before,.auth-or::after{content:"";flex:1;height:1px;background:var(--border);}
 
 #app{flex:1;padding:24px 26px 60px;max-width:1380px;width:100%;margin:0 auto;}
 .page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:20px;flex-wrap:wrap;}
@@ -354,6 +362,7 @@ textarea.textarea{width:100%;resize:vertical;min-height:62px;}
         <div id="searchResults"></div>
       </div>
       <div class="topbar-actions">
+        <div id="syncBadge" class="sync-badge" style="display:none;"></div>
         <button class="icon-btn" onclick="toggleNotifPanel(event)" title="Alerts">
           <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
           <span class="notif-dot" id="notifDot" style="display:none;"></span>
@@ -379,6 +388,13 @@ textarea.textarea{width:100%;resize:vertical;min-height:62px;}
    Data lives encrypted in this browser (AES-GCM, key derived from the
    sign-in password) and is backed up by exporting a file.
    ========================================================================= */
+
+/* OAuth Client ID from Google Cloud Console. This is public by design — it
+   ships in the page and identifies the app to Google. The client secret is
+   deliberately NOT here: a static site cannot keep one, and the browser
+   token flow does not use it. Access is bounded by the authorised
+   JavaScript origins set on this client. */
+const GOOGLE_CLIENT_ID = '108999565212-hm2sdqajqq3hos8mg5ids1aa36hgr35f.apps.googleusercontent.com';
 
 const VAULT_KEY = 'loanbook_vault';
 const AUTH_KEY  = 'loanbook_auth';
@@ -450,6 +466,163 @@ async function weakHash(str){
 
 let sessionKey = null;
 let insecureMode = !cryptoOK;
+
+/* =========================== GOOGLE DRIVE SYNC ===========================
+   Identity and storage both come from the user's own Google account: the
+   book is kept as one readable loanbook.json in their Drive, so it survives
+   a lost laptop, follows them to the phone, and can be opened by hand.
+   Only files this app creates are visible to it (drive.file scope). */
+const DRIVE_FILENAME = 'loanbook.json';
+const DRIVE_SCOPES = 'openid email profile https://www.googleapis.com/auth/drive.file';
+let gTokenClient = null, gAccessToken = null, gTokenExpiry = 0, driveFileId = null;
+let syncState = 'idle', syncMessage = '', syncTimer = null;
+
+function googleConfigured(){ return !!GOOGLE_CLIENT_ID; }
+function googleReady(){ return !!(googleConfigured() && window.google && window.google.accounts && window.google.accounts.oauth2); }
+function isGoogleMode(){ return (readAuth()||{}).mode === 'google'; }
+function waitForGoogle(ms){
+  ms = ms||5000;
+  return new Promise(resolve=>{
+    if(!googleConfigured()) return resolve(false);
+    const t0 = Date.now();
+    (function check(){
+      if(googleReady()) return resolve(true);
+      if(Date.now()-t0 > ms) return resolve(false);
+      setTimeout(check, 100);
+    })();
+  });
+}
+function requestToken(silent){
+  return new Promise((resolve,reject)=>{
+    if(!googleReady()) return reject(new Error('Google sign-in is not available on this page.'));
+    if(!gTokenClient){
+      gTokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID, scope: DRIVE_SCOPES, callback: ()=>{}
+      });
+    }
+    gTokenClient.callback = resp=>{
+      if(resp.error){ reject(new Error(resp.error_description || resp.error)); return; }
+      gAccessToken = resp.access_token;
+      gTokenExpiry = Date.now() + (Number(resp.expires_in||3600)-60)*1000;
+      resolve(gAccessToken);
+    };
+    gTokenClient.error_callback = err=>reject(new Error((err&&err.message)||'Google sign-in was cancelled.'));
+    /* An empty prompt reuses an existing grant silently and falls back to
+       Google's own consent screen the first time. */
+    try{ gTokenClient.requestAccessToken({prompt:''}); }
+    catch(e){ reject(e); }
+  });
+}
+async function ensureToken(){
+  if(gAccessToken && Date.now() < gTokenExpiry) return gAccessToken;
+  return requestToken(true);
+}
+async function gfetch(url, opts){
+  opts = Object.assign({}, opts||{});
+  let token = await ensureToken();
+  opts.headers = Object.assign({}, opts.headers, {Authorization:'Bearer '+token});
+  let res = await fetch(url, opts);
+  if(res.status === 401){
+    gAccessToken = null;
+    token = await requestToken(true);
+    opts.headers.Authorization = 'Bearer '+token;
+    res = await fetch(url, opts);
+  }
+  if(!res.ok){ throw new Error('Drive '+res.status+': '+(await res.text()).slice(0,160)); }
+  return res;
+}
+async function fetchGoogleProfile(){ return (await gfetch('https://www.googleapis.com/oauth2/v3/userinfo')).json(); }
+async function findDriveFile(){
+  const q = encodeURIComponent(`name='${DRIVE_FILENAME}' and trashed=false`);
+  const res = await gfetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,modifiedTime)&orderBy=modifiedTime desc`);
+  const j = await res.json();
+  return (j.files && j.files[0]) || null;
+}
+async function writeDriveFile(payload){
+  const body = JSON.stringify(payload, null, 2);
+  if(driveFileId){
+    await gfetch(`https://www.googleapis.com/upload/drive/v3/files/${driveFileId}?uploadType=media`,
+      {method:'PATCH', headers:{'Content-Type':'application/json'}, body});
+    return driveFileId;
+  }
+  const boundary = 'lbk'+Math.random().toString(36).slice(2);
+  const meta = JSON.stringify({name:DRIVE_FILENAME, mimeType:'application/json'});
+  const multipart = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n`
+    + `--${boundary}\r\nContent-Type: application/json\r\n\r\n${body}\r\n--${boundary}--`;
+  const res = await gfetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+    {method:'POST', headers:{'Content-Type':`multipart/related; boundary=${boundary}`}, body:multipart});
+  driveFileId = (await res.json()).id;
+  return driveFileId;
+}
+function setSync(s, msg){ syncState = s; syncMessage = msg||''; renderSyncBadge(); }
+async function pushToDrive(){
+  if(!isGoogleMode() || !googleReady()) return;
+  try{
+    setSync('syncing');
+    await writeDriveFile({app:'LoanBook', version:2, updatedAt:state.updatedAt||Date.now(), savedAt:new Date().toISOString(), data:state});
+    state.lastBackup = Date.now();
+    localStorage.setItem(VAULT_KEY, JSON.stringify({plain:state}));
+    setSync('synced');
+  }catch(e){ console.error(e); setSync('error', e.message); }
+}
+function schedulePush(){
+  if(!isGoogleMode() || !googleReady()) return;
+  clearTimeout(syncTimer);
+  setSync('syncing');
+  syncTimer = setTimeout(pushToDrive, 1500);
+}
+/* On sign-in the newer of the two copies wins, so whichever device was used
+   last is the one that carries. Single user, so last-write-wins is enough. */
+async function syncOnSignIn(){
+  setSync('syncing');
+  try{
+    const f = await findDriveFile();
+    driveFileId = f ? f.id : null;
+    const remote = f ? await (await gfetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`)).json() : null;
+    const localUpdated = (state && state.updatedAt) || 0;
+    if(remote && remote.data && (remote.updatedAt||0) > localUpdated){
+      const d = remote.data, base = freshState();
+      for(const k in base){ if(d[k] === undefined) d[k] = base[k]; }
+      state = d;
+      localStorage.setItem(VAULT_KEY, JSON.stringify({plain:state}));
+      setSync('synced');
+      return 'pulled';
+    }
+    await pushToDrive();
+    return f ? 'pushed' : 'created';
+  }catch(e){ console.error(e); setSync('error', e.message); return 'error'; }
+}
+async function signInWithGoogle(){
+  await requestToken(false);
+  const profile = await fetchGoogleProfile();
+  const prev = readAuth()||{};
+  writeAuth({mode:'google', username: profile.name || profile.email, email: profile.email, createdAt: prev.createdAt||Date.now()});
+  sessionKey = 'plain';
+  try{ await loadVault(); }catch(e){ state = freshState(); }
+  if(!state) state = freshState();
+  await syncOnSignIn();
+}
+function disconnectGoogle(){
+  try{ if(gAccessToken && window.google) google.accounts.oauth2.revoke(gAccessToken, ()=>{}); }catch(e){}
+  gAccessToken = null; driveFileId = null;
+  localStorage.removeItem(AUTH_KEY);
+  signOut();
+}
+function renderSyncBadge(){
+  const el = document.getElementById('syncBadge');
+  if(!el) return;
+  if(!isGoogleMode()){ el.style.display='none'; return; }
+  el.style.display = 'flex';
+  const map = {
+    syncing:{t:'Saving…', c:'var(--ink-soft)'},
+    synced:{t:'Saved to Drive', c:'var(--teal)'},
+    error:{t:'Not saved', c:'var(--red)'},
+    idle:{t:'', c:'var(--ink-faint)'}
+  };
+  const s = map[syncState]||map.idle;
+  el.innerHTML = `<span style="width:7px;height:7px;border-radius:50%;background:${s.c};flex:none;"></span><span>${s.t}</span>`;
+  el.title = syncMessage || s.t;
+}
 
 function readAuth(){ try{ return JSON.parse(localStorage.getItem(AUTH_KEY)||'null'); }catch(e){ return null; } }
 function writeAuth(a){ localStorage.setItem(AUTH_KEY, JSON.stringify(a)); }
@@ -543,7 +716,11 @@ async function loadVault(){
   const f = freshState();
   for(const k in f){ if(state[k] === undefined) state[k] = f[k]; }
 }
-function save(){ persist().catch(e=>{ console.error(e); toast('Could not save changes','error'); }); }
+function save(){
+  if(state) state.updatedAt = Date.now();
+  persist().catch(e=>{ console.error(e); toast('Could not save changes','error'); });
+  schedulePush();
+}
 function nextId(kind,prefix){ state.seq[kind]=(state.seq[kind]||0)+1; return prefix+'-'+String(state.seq[kind]).padStart(4,'0'); }
 
 /* Borrower IDs read from the name so repeat customers are recognisable
@@ -1329,9 +1506,30 @@ function pageSettings(){
   return `
   <div class="page-head"><div><h1>Settings</h1><p class="page-sub">Your account, your backups, and the details printed on confirmation letters.</p></div></div>
 
+  ${isGoogleMode() ? `
   <div class="section">
-    <div class="section-head"><h3>Backup</h3><span class="shint">${last?('Last backup '+fmtDate(toISO(new Date(last)))):'Never backed up'}</span></div>
-    ${stale?`<div class="callout" style="margin-bottom:14px;"><b>Back up now.</b> Your records live in this browser. Download a backup and keep it in your Google Drive or OneDrive folder so it is safe and syncs to your other devices.</div>`:`<div class="callout info" style="margin-bottom:14px;">Backed up ${fmtDate(toISO(new Date(last)))}. Keep the file in your Drive or OneDrive folder.</div>`}
+    <div class="section-head"><h3>Google Drive</h3><span class="shint">${last?('Last saved '+fmtDateTime(last)):'Not saved yet'}</span></div>
+    <div class="callout info" style="margin-bottom:14px;">Your book saves itself to <b>${DRIVE_FILENAME}</b> in your Google Drive every time you change something. Open the same link on your phone and sign in with the same Google account to see the very same book.</div>
+    <div class="set-row">
+      <div><div class="set-label">Signed in as ${esc(auth.email||auth.username||'')}</div>
+      <div class="set-desc">Nothing else in your Drive is visible to this app — only the file it created.</div></div>
+      <button class="btn" onclick="manualSync()">Save to Drive now</button>
+    </div>
+    <div class="set-row">
+      <div><div class="set-label">Disconnect Google</div><div class="set-desc">Signs out and forgets the account on this device. The file stays in your Drive.</div></div>
+      <button class="btn btn-danger" onclick="disconnectGoogle()">Disconnect</button>
+    </div>
+  </div>` : (googleConfigured() ? `
+  <div class="section">
+    <div class="section-head"><h3>Google Drive</h3></div>
+    <div class="callout" style="margin-bottom:14px;"><b>Turn on automatic backup.</b> Connect your Google account and this book saves itself to your Drive after every change — and shows the same records on your phone.</div>
+    <button class="btn btn-primary" onclick="connectGoogleFromSettings()">Connect Google Drive</button>
+  </div>` : '')}
+
+  <div class="section">
+    <div class="section-head"><h3>Backup file</h3><span class="shint">${last?('Last backup '+fmtDate(toISO(new Date(last)))):'Never backed up'}</span></div>
+    ${isGoogleMode() ? `<div class="callout info" style="margin-bottom:14px;">Drive already holds a copy. A downloaded file is still worth keeping now and then as a second copy you control.</div>`
+      : (stale?`<div class="callout" style="margin-bottom:14px;"><b>Back up now.</b> Your records live in this browser. Download a backup and keep it in your Google Drive or OneDrive folder so it is safe and syncs to your other devices.</div>`:`<div class="callout info" style="margin-bottom:14px;">Backed up ${fmtDate(toISO(new Date(last)))}. Keep the file in your Drive or OneDrive folder.</div>`)}
     <div class="set-row">
       <div><div class="set-label">Download a backup</div><div class="set-desc">Saves your whole book as one file. Put it in the Google Drive or OneDrive folder on your computer and it syncs to the cloud automatically.</div></div>
       <button class="btn btn-primary" onclick="exportBackup()">${icon('download')} Download backup</button>
@@ -1359,11 +1557,13 @@ function pageSettings(){
   <div class="section">
     <div class="section-head"><h3>Account &amp; security</h3></div>
     <div class="set-row">
-      <div><div class="set-label">Signed in as ${esc(auth.username||'—')}</div>
-      <div class="set-desc">${insecureMode
-        ? 'This page was opened straight from a file, so your browser will not allow encryption. Open the web link instead to keep your records encrypted.'
-        : 'Your records are encrypted on this device with a key made from your password. Without the password the data cannot be read — so keep the password safe; it cannot be recovered.'}</div></div>
-      <button class="btn" onclick="openChangePassword()">Change password</button>
+      <div><div class="set-label">Signed in as ${esc(auth.email||auth.username||'—')}</div>
+      <div class="set-desc">${isGoogleMode()
+        ? 'Your Google account controls access. Turn on two-step verification with Google for the strongest protection.'
+        : (insecureMode
+          ? 'This page was opened straight from a file, so your browser will not allow encryption. Open the web link instead to keep your records encrypted.'
+          : 'Your records are encrypted on this device with a key made from your password. Without the password the data cannot be read — so keep the password safe; it cannot be recovered.')}</div></div>
+      ${isGoogleMode() ? '' : `<button class="btn" onclick="openChangePassword()">Change password</button>`}
     </div>
     <div class="set-row">
       <div><div class="set-label">Sign out</div><div class="set-desc">Locks the book on this device until the password is entered again.</div></div>
@@ -1383,6 +1583,18 @@ function pageSettings(){
       <button class="btn btn-danger" onclick="confirmWipe()">Clear all data</button>
     </div>
   </div>`;
+}
+async function manualSync(){
+  try{ await pushToDrive(); toast('Saved to Google Drive'); rerender('settings'); }
+  catch(e){ toast('Could not reach Drive','error'); }
+}
+async function connectGoogleFromSettings(){
+  try{
+    await signInWithGoogle();
+    toast('Google Drive connected');
+    startApp();
+    navigate('#/settings');
+  }catch(e){ toast(e.message||'Could not connect Google','error'); }
 }
 function saveBusiness(e){
   e.preventDefault();
@@ -1809,33 +2021,61 @@ function authShellHTML(inner){
       <div><div class="bn">LoanBook</div><div class="bs">Portfolio Ledger</div></div>
     </div>${inner}</div>`;
 }
+function googleLogo(){
+  return `<svg viewBox="0 0 48 48"><path fill="#4285F4" d="M45.1 24.5c0-1.6-.1-3.2-.4-4.7H24v8.9h11.8c-.5 2.7-2 5-4.3 6.6v5.5h7c4.1-3.8 6.6-9.4 6.6-16.3z"/><path fill="#34A853" d="M24 46c5.8 0 10.7-1.9 14.3-5.2l-7-5.5c-1.9 1.3-4.4 2.1-7.3 2.1-5.6 0-10.4-3.8-12.1-8.9H4.7v5.7C8.3 41.4 15.6 46 24 46z"/><path fill="#FBBC05" d="M11.9 28.5c-.4-1.3-.7-2.7-.7-4.5s.3-3.2.7-4.5v-5.7H4.7C3.1 17 2 20.4 2 24s1.1 7 2.7 10.2l7.2-5.7z"/><path fill="#EA4335" d="M24 10.6c3.2 0 6 1.1 8.2 3.2l6.2-6.2C34.7 4.1 29.8 2 24 2 15.6 2 8.3 6.6 4.7 13.8l7.2 5.7c1.7-5.1 6.5-8.9 12.1-8.9z"/></svg>`;
+}
+function googleButton(label){
+  return `<button type="button" class="gbtn" id="gBtn" onclick="doGoogleSignIn()">${googleLogo()}<span>${label}</span></button>`;
+}
+async function doGoogleSignIn(){
+  const btn = document.getElementById('gBtn');
+  const err = document.getElementById('authErr');
+  if(btn){ btn.disabled = true; btn.querySelector('span').textContent = 'Connecting…'; }
+  try{
+    await signInWithGoogle();
+    startApp();
+  }catch(ex){
+    if(err) err.innerHTML = `<div class="auth-error">${esc(ex.message)}</div>`;
+    if(btn){ btn.disabled = false; btn.querySelector('span').textContent = 'Continue with Google'; }
+  }
+}
 function showSetup(){
+  const g = googleConfigured();
   document.getElementById('authScreen').innerHTML = authShellHTML(`
-    <h2>Set up your account</h2>
-    <p class="auth-sub">This book is for you alone. Choose a username and password — they are needed every time it is opened.</p>
+    <h2>Set up your book</h2>
+    <p class="auth-sub">${g
+      ? 'Sign in with Google and your book is saved to your own Google Drive — safe if this computer is lost, and the same book on your phone.'
+      : 'This book is for you alone. Choose a username and password — they are needed every time it is opened.'}</p>
+    <div id="authErr"></div>
+    ${g ? googleButton('Continue with Google') + `<div class="auth-or">or use a password</div>` : ''}
     <form onsubmit="return doSetup(event)">
-      <div id="authErr"></div>
-      <div class="auth-field"><label>Username</label><input name="u" required autofocus autocomplete="username"></div>
+      <div class="auth-field"><label>Username</label><input name="u" required ${g?'':'autofocus'} autocomplete="username"></div>
       <div class="auth-field"><label>Password</label><input name="p1" type="password" required minlength="6" autocomplete="new-password"></div>
       <div class="auth-field"><label>Repeat password</label><input name="p2" type="password" required minlength="6" autocomplete="new-password"></div>
       <button class="auth-submit" type="submit">Create account</button>
     </form>
     <p class="auth-note">${insecureMode
-      ? 'Note: opened directly from a file, so your browser will not allow encryption. Use the web link for encrypted storage.'
-      : 'Your records are encrypted on this device with a key made from your password. There is no recovery if you forget it, so keep a backup file.'}</p>`);
+      ? 'Note: opened directly from a file, so your browser will not allow encryption. Use the web link instead.'
+      : 'With a password, records are encrypted on this device only — there is no recovery if you forget it, and the phone keeps a separate book.'}</p>`);
 }
 function showLogin(msg){
   const auth = readAuth()||{};
+  const g = googleConfigured();
+  const wasGoogle = auth.mode === 'google';
   document.getElementById('authScreen').innerHTML = authShellHTML(`
     <h2>Sign in</h2>
-    <p class="auth-sub">Welcome back${auth.username?', '+esc(auth.username):''}.</p>
-    <form onsubmit="return doLogin(event)">
-      <div id="authErr">${msg?`<div class="auth-error">${esc(msg)}</div>`:''}</div>
-      <div class="auth-field"><label>Username</label><input name="u" value="${esc(auth.username||'')}" required autocomplete="username"></div>
-      <div class="auth-field"><label>Password</label><input name="p" type="password" required autofocus autocomplete="current-password"></div>
-      <button class="auth-submit" type="submit">Sign in</button>
-    </form>
-    <p class="auth-note">Forgotten the password? It cannot be recovered — the records are encrypted with it. You would need to start again and restore from a backup file.</p>`);
+    <p class="auth-sub">Welcome back${auth.username?', '+esc(auth.username.split(' ')[0]):''}.</p>
+    <div id="authErr">${msg?`<div class="auth-error">${esc(msg)}</div>`:''}</div>
+    ${g ? googleButton(wasGoogle && auth.email ? 'Continue as '+esc(auth.email) : 'Continue with Google') : ''}
+    ${wasGoogle ? '' : `
+      ${g?`<div class="auth-or">or use your password</div>`:''}
+      <form onsubmit="return doLogin(event)">
+        <div class="auth-field"><label>Username</label><input name="u" value="${esc(auth.username||'')}" required autocomplete="username"></div>
+        <div class="auth-field"><label>Password</label><input name="p" type="password" required ${g?'':'autofocus'} autocomplete="current-password"></div>
+        <button class="auth-submit" type="submit">Sign in</button>
+      </form>
+      <p class="auth-note">Forgotten the password? It cannot be recovered — the records are encrypted with it. You would need to start again and restore from a backup file.</p>`}
+    ${wasGoogle ? `<p class="auth-note">Your book lives in your Google Drive as ${DRIVE_FILENAME}.</p>` : ''}`);
 }
 async function doSetup(e){
   e.preventDefault();
@@ -1878,12 +2118,33 @@ function startApp(){
   document.getElementById('userName').textContent = auth.username||'—';
   route = location.hash || '#/dashboard';
   render();
+  renderSyncBadge();
 }
 async function boot(){
-  if(!readAuth()){ showSetup(); return; }
+  const auth = readAuth();
+  await waitForGoogle(googleConfigured() ? 5000 : 0);
+  if(!auth){ showSetup(); return; }
+  if(auth.mode === 'google'){
+    if(!googleReady()){ showLogin('Google sign-in could not load. Check your connection and try again.'); return; }
+    try{
+      await requestToken(true);                       // silent, reuses the existing grant
+      sessionKey = 'plain';
+      try{ await loadVault(); }catch(e){ state = freshState(); }
+      if(!state) state = freshState();
+      startApp();
+      syncOnSignIn().catch(e=>console.error(e));      // reconcile with Drive in the background
+    }catch(e){ showLogin(); }
+    return;
+  }
   if(await restoreSession()){ startApp(); return; }
   showLogin();
 }
+/* Coming back to the tab on another device should pick up what changed. */
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState === 'visible' && isGoogleMode() && googleReady() && state){
+    syncOnSignIn().then(r=>{ if(r === 'pulled'){ render(); toast('Updated from Drive'); } }).catch(()=>{});
+  }
+});
 boot();
 </script>
 </body>
