@@ -1519,7 +1519,7 @@ function pageSettings(){
       <div><div class="set-label">Disconnect Google</div><div class="set-desc">Signs out and forgets the account on this device. The file stays in your Drive.</div></div>
       <button class="btn btn-danger" onclick="disconnectGoogle()">Disconnect</button>
     </div>
-  </div>` : (googleConfigured() ? `
+  </div>` : (googleReady() ? `
   <div class="section">
     <div class="section-head"><h3>Google Drive</h3></div>
     <div class="callout" style="margin-bottom:14px;"><b>Turn on automatic backup.</b> Connect your Google account and this book saves itself to your Drive after every change — and shows the same records on your phone.</div>
@@ -2040,7 +2040,10 @@ async function doGoogleSignIn(){
   }
 }
 function showSetup(){
-  const g = googleConfigured();
+  /* Readiness, not just configuration: where Google's script is blocked
+     (a sandboxed embed, no connection) the password path is the only one
+     that can actually work, so don't offer a button that cannot run. */
+  const g = googleReady();
   document.getElementById('authScreen').innerHTML = authShellHTML(`
     <h2>Set up your book</h2>
     <p class="auth-sub">${g
@@ -2060,8 +2063,10 @@ function showSetup(){
 }
 function showLogin(msg){
   const auth = readAuth()||{};
-  const g = googleConfigured();
   const wasGoogle = auth.mode === 'google';
+  /* A Google account has no password to fall back on, so always give it a
+     way back in — even when the script has not loaded, so retrying is possible. */
+  const g = googleReady() || wasGoogle;
   document.getElementById('authScreen').innerHTML = authShellHTML(`
     <h2>Sign in</h2>
     <p class="auth-sub">Welcome back${auth.username?', '+esc(auth.username.split(' ')[0]):''}.</p>
