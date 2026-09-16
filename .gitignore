@@ -1,0 +1,8 @@
+# OAuth client secrets must never be committed. This is a static site with no
+# server, so it has nowhere safe to keep one — and the browser sign-in flow
+# does not use it. Only the client ID belongs in the page.
+client_secret*.json
+*.client_secret.json
+
+# Local backups downloaded from the app (they hold borrower records)
+loanbook-backup-*.json
