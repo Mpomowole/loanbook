@@ -126,8 +126,6 @@ nav.mainnav{padding:12px 10px;display:flex;flex-direction:column;gap:2px;flex:1;
 .gbtn:hover{background:var(--surface-2);}
 .gbtn:disabled{opacity:0.6;cursor:wait;}
 .gbtn svg{width:18px;height:18px;}
-.auth-or{display:flex;align-items:center;gap:10px;margin:18px 0;color:var(--ink-faint);font-size:11.5px;}
-.auth-or::before,.auth-or::after{content:"";flex:1;height:1px;background:var(--border);}
 
 #app{flex:1;padding:24px 26px 60px;max-width:1380px;width:100%;margin:0 auto;}
 .page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:20px;flex-wrap:wrap;}
@@ -398,8 +396,6 @@ const GOOGLE_CLIENT_ID = '108999565212-hm2sdqajqq3hos8mg5ids1aa36hgr35f.apps.goo
 
 const VAULT_KEY = 'loanbook_vault';
 const AUTH_KEY  = 'loanbook_auth';
-const SESSION_KEY = 'loanbook_session_key';
-const PBKDF2_ITERATIONS = 200000;
 const TODAY = toISO(new Date());
 
 /* ---------- utilities ---------- */
@@ -435,38 +431,6 @@ const ICONS = {
 };
 function icon(n){ return ICONS[n]||''; }
 
-/* =========================== CRYPTO =========================== */
-const cryptoOK = !!(window.crypto && window.crypto.subtle);
-function b64(buf){ return btoa(String.fromCharCode(...new Uint8Array(buf))); }
-function unb64(s){ return Uint8Array.from(atob(s), c=>c.charCodeAt(0)); }
-async function deriveKey(password, saltB64){
-  const salt = unb64(saltB64);
-  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
-  return crypto.subtle.deriveKey(
-    {name:'PBKDF2', salt, iterations:PBKDF2_ITERATIONS, hash:'SHA-256'},
-    base, {name:'AES-GCM', length:256}, true, ['encrypt','decrypt']);
-}
-async function encryptJSON(key, obj){
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const data = new TextEncoder().encode(JSON.stringify(obj));
-  const ct = await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, data);
-  return {iv:b64(iv), ct:b64(ct)};
-}
-async function decryptJSON(key, blob){
-  const plain = await crypto.subtle.decrypt({name:'AES-GCM', iv:unb64(blob.iv)}, key, unb64(blob.ct));
-  return JSON.parse(new TextDecoder().decode(plain));
-}
-/* Weak fallback used only where Web Crypto is unavailable (e.g. opening the
-   file straight off disk, which browsers treat as an insecure context). */
-async function weakHash(str){
-  let h1=0x811c9dc5, h2=0x01000193;
-  for(let i=0;i<str.length;i++){ h1=(h1^str.charCodeAt(i))>>>0; h1=(h1*0x01000193)>>>0; h2=(h2+str.charCodeAt(i)*(i+7))>>>0; }
-  return (h1.toString(16)+h2.toString(16));
-}
-
-let sessionKey = null;
-let insecureMode = !cryptoOK;
-
 /* =========================== GOOGLE DRIVE SYNC ===========================
    Identity and storage both come from the user's own Google account: the
    book is kept as one readable loanbook.json in their Drive, so it survives
@@ -479,7 +443,7 @@ let syncState = 'idle', syncMessage = '', syncTimer = null;
 
 function googleConfigured(){ return !!GOOGLE_CLIENT_ID; }
 function googleReady(){ return !!(googleConfigured() && window.google && window.google.accounts && window.google.accounts.oauth2); }
-function isGoogleMode(){ return (readAuth()||{}).mode === 'google'; }
+function isSignedIn(){ return !!readAuth(); }
 function waitForGoogle(ms){
   ms = ms||5000;
   return new Promise(resolve=>{
@@ -556,7 +520,7 @@ async function writeDriveFile(payload){
 }
 function setSync(s, msg){ syncState = s; syncMessage = msg||''; renderSyncBadge(); }
 async function pushToDrive(){
-  if(!isGoogleMode() || !googleReady()) return;
+  if(!isSignedIn() || !googleReady()) return;
   try{
     setSync('syncing');
     await writeDriveFile({app:'LoanBook', version:2, updatedAt:state.updatedAt||Date.now(), savedAt:new Date().toISOString(), data:state});
@@ -566,7 +530,7 @@ async function pushToDrive(){
   }catch(e){ console.error(e); setSync('error', e.message); }
 }
 function schedulePush(){
-  if(!isGoogleMode() || !googleReady()) return;
+  if(!isSignedIn() || !googleReady()) return;
   clearTimeout(syncTimer);
   setSync('syncing');
   syncTimer = setTimeout(pushToDrive, 1500);
@@ -596,8 +560,7 @@ async function signInWithGoogle(){
   await requestToken(false);
   const profile = await fetchGoogleProfile();
   const prev = readAuth()||{};
-  writeAuth({mode:'google', username: profile.name || profile.email, email: profile.email, createdAt: prev.createdAt||Date.now()});
-  sessionKey = 'plain';
+  writeAuth({username: profile.name || profile.email, email: profile.email, createdAt: prev.createdAt||Date.now()});
   try{ await loadVault(); }catch(e){ state = freshState(); }
   if(!state) state = freshState();
   await syncOnSignIn();
@@ -611,7 +574,7 @@ function disconnectGoogle(){
 function renderSyncBadge(){
   const el = document.getElementById('syncBadge');
   if(!el) return;
-  if(!isGoogleMode()){ el.style.display='none'; return; }
+  if(!isSignedIn()){ el.style.display='none'; return; }
   el.style.display = 'flex';
   const map = {
     syncing:{t:'Saving…', c:'var(--ink-soft)'},
@@ -627,61 +590,12 @@ function renderSyncBadge(){
 function readAuth(){ try{ return JSON.parse(localStorage.getItem(AUTH_KEY)||'null'); }catch(e){ return null; } }
 function writeAuth(a){ localStorage.setItem(AUTH_KEY, JSON.stringify(a)); }
 
-async function createAccount(username, password){
-  const auth = {username, createdAt: Date.now(), mode: cryptoOK ? 'aes' : 'plain'};
-  if(cryptoOK){
-    const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
-    auth.salt = salt;
-    auth.iterations = PBKDF2_ITERATIONS;
-    const key = await deriveKey(password, salt);
-    auth.check = await encryptJSON(key, {ok:'LOANBOOK'});
-    sessionKey = key;
-  } else {
-    auth.weak = await weakHash(password+'::loanbook');
-    sessionKey = 'plain';
-  }
-  writeAuth(auth);
-  state = freshState();
-  await persist();
-  await rememberSession();
-}
-async function unlock(password){
-  const auth = readAuth();
-  if(!auth) throw new Error('No account on this device.');
-  if(auth.mode === 'aes'){
-    const key = await deriveKey(password, auth.salt);
-    try{ await decryptJSON(key, auth.check); }
-    catch(e){ throw new Error('Incorrect password.'); }
-    sessionKey = key;
-  } else {
-    const h = await weakHash(password+'::loanbook');
-    if(h !== auth.weak) throw new Error('Incorrect password.');
-    sessionKey = 'plain';
-  }
-  await loadVault();
-  await rememberSession();
-}
-async function rememberSession(){
-  try{
-    if(sessionKey === 'plain'){ sessionStorage.setItem(SESSION_KEY,'plain'); return; }
-    const raw = await crypto.subtle.exportKey('raw', sessionKey);
-    sessionStorage.setItem(SESSION_KEY, b64(raw));
-  }catch(e){}
-}
-async function restoreSession(){
-  try{
-    const s = sessionStorage.getItem(SESSION_KEY);
-    if(!s) return false;
-    if(s === 'plain'){ sessionKey='plain'; await loadVault(); return true; }
-    if(!cryptoOK) return false;
-    sessionKey = await crypto.subtle.importKey('raw', unb64(s), {name:'AES-GCM'}, true, ['encrypt','decrypt']);
-    await loadVault();
-    return true;
-  }catch(e){ sessionStorage.removeItem(SESSION_KEY); return false; }
-}
+/* Signing out drops the token and the local copy of the book. Nothing is
+   lost — Drive holds it — and it leaves no records behind on a shared or
+   borrowed computer. */
 function signOut(){
-  sessionKey = null;
-  sessionStorage.removeItem(SESSION_KEY);
+  gAccessToken = null; driveFileId = null;
+  try{ localStorage.removeItem(VAULT_KEY); }catch(e){}
   location.reload();
 }
 
@@ -699,26 +613,23 @@ function freshState(){
     createdAt: Date.now()
   };
 }
-async function persist(){
-  if(insecureMode || sessionKey === 'plain'){
-    localStorage.setItem(VAULT_KEY, JSON.stringify({plain:state}));
-    return;
-  }
-  const blob = await encryptJSON(sessionKey, state);
-  localStorage.setItem(VAULT_KEY, JSON.stringify(blob));
+/* Drive is the record of truth; this is only a local copy so the book still
+   opens instantly and survives a brief drop in connection. */
+function persist(){
+  try{ localStorage.setItem(VAULT_KEY, JSON.stringify({plain:state})); }
+  catch(e){ console.error(e); }
 }
-async function loadVault(){
+function loadVault(){
   const raw = localStorage.getItem(VAULT_KEY);
   if(!raw){ state = freshState(); return; }
   const parsed = JSON.parse(raw);
-  if(parsed.plain){ state = parsed.plain; }
-  else { state = await decryptJSON(sessionKey, parsed); }
+  state = parsed.plain || freshState();
   const f = freshState();
   for(const k in f){ if(state[k] === undefined) state[k] = f[k]; }
 }
 function save(){
   if(state) state.updatedAt = Date.now();
-  persist().catch(e=>{ console.error(e); toast('Could not save changes','error'); });
+  persist();
   schedulePush();
 }
 function nextId(kind,prefix){ state.seq[kind]=(state.seq[kind]||0)+1; return prefix+'-'+String(state.seq[kind]).padStart(4,'0'); }
@@ -1506,7 +1417,6 @@ function pageSettings(){
   return `
   <div class="page-head"><div><h1>Settings</h1><p class="page-sub">Your account, your backups, and the details printed on confirmation letters.</p></div></div>
 
-  ${isGoogleMode() ? `
   <div class="section">
     <div class="section-head"><h3>Google Drive</h3><span class="shint">${last?('Last saved '+fmtDateTime(last)):'Not saved yet'}</span></div>
     <div class="callout info" style="margin-bottom:14px;">Your book saves itself to <b>${DRIVE_FILENAME}</b> in your Google Drive every time you change something. Open the same link on your phone and sign in with the same Google account to see the very same book.</div>
@@ -1516,20 +1426,14 @@ function pageSettings(){
       <button class="btn" onclick="manualSync()">Save to Drive now</button>
     </div>
     <div class="set-row">
-      <div><div class="set-label">Disconnect Google</div><div class="set-desc">Signs out and forgets the account on this device. The file stays in your Drive.</div></div>
-      <button class="btn btn-danger" onclick="disconnectGoogle()">Disconnect</button>
+      <div><div class="set-label">Sign out</div><div class="set-desc">Clears the book from this computer. Your Drive copy is untouched and comes back when you sign in again.</div></div>
+      <button class="btn" onclick="signOut()">Sign out</button>
     </div>
-  </div>` : (googleReady() ? `
-  <div class="section">
-    <div class="section-head"><h3>Google Drive</h3></div>
-    <div class="callout" style="margin-bottom:14px;"><b>Turn on automatic backup.</b> Connect your Google account and this book saves itself to your Drive after every change — and shows the same records on your phone.</div>
-    <button class="btn btn-primary" onclick="connectGoogleFromSettings()">Connect Google Drive</button>
-  </div>` : '')}
+  </div>
 
   <div class="section">
     <div class="section-head"><h3>Backup file</h3><span class="shint">${last?('Last backup '+fmtDate(toISO(new Date(last)))):'Never backed up'}</span></div>
-    ${isGoogleMode() ? `<div class="callout info" style="margin-bottom:14px;">Drive already holds a copy. A downloaded file is still worth keeping now and then as a second copy you control.</div>`
-      : (stale?`<div class="callout" style="margin-bottom:14px;"><b>Back up now.</b> Your records live in this browser. Download a backup and keep it in your Google Drive or OneDrive folder so it is safe and syncs to your other devices.</div>`:`<div class="callout info" style="margin-bottom:14px;">Backed up ${fmtDate(toISO(new Date(last)))}. Keep the file in your Drive or OneDrive folder.</div>`)}
+    <div class="callout info" style="margin-bottom:14px;">Drive already holds a copy. A downloaded file is still worth keeping now and then as a second copy you control.</div>
     <div class="set-row">
       <div><div class="set-label">Download a backup</div><div class="set-desc">Saves your whole book as one file. Put it in the Google Drive or OneDrive folder on your computer and it syncs to the cloud automatically.</div></div>
       <button class="btn btn-primary" onclick="exportBackup()">${icon('download')} Download backup</button>
@@ -1555,19 +1459,11 @@ function pageSettings(){
   </div>
 
   <div class="section">
-    <div class="section-head"><h3>Account &amp; security</h3></div>
+    <div class="section-head"><h3>Security</h3></div>
     <div class="set-row">
-      <div><div class="set-label">Signed in as ${esc(auth.email||auth.username||'—')}</div>
-      <div class="set-desc">${isGoogleMode()
-        ? 'Your Google account controls access. Turn on two-step verification with Google for the strongest protection.'
-        : (insecureMode
-          ? 'This page was opened straight from a file, so your browser will not allow encryption. Open the web link instead to keep your records encrypted.'
-          : 'Your records are encrypted on this device with a key made from your password. Without the password the data cannot be read — so keep the password safe; it cannot be recovered.')}</div></div>
-      ${isGoogleMode() ? '' : `<button class="btn" onclick="openChangePassword()">Change password</button>`}
-    </div>
-    <div class="set-row">
-      <div><div class="set-label">Sign out</div><div class="set-desc">Locks the book on this device until the password is entered again.</div></div>
-      <button class="btn" onclick="signOut()">Sign out</button>
+      <div><div class="set-label">Your Google account controls access</div>
+      <div class="set-desc">Only you can open this book, because only you can sign in to ${esc(auth.email||'your account')}. Turning on two-step verification with Google is the single best thing you can do to protect it.</div></div>
+      <button class="btn" onclick="disconnectGoogle()">Disconnect this account</button>
     </div>
   </div>
 
@@ -1575,7 +1471,7 @@ function pageSettings(){
     <div class="section-head"><h3>Data</h3></div>
     <div class="set-row">
       <div><div class="set-label">${state.loans.length} loans · ${state.borrowers.length} borrowers · ${state.payments.length} payments</div>
-      <div class="set-desc">Everything is stored in this browser on this device.</div></div>
+      <div class="set-desc">Held in your Google Drive, with a copy on this computer for speed.</div></div>
       ${state.borrowers.length?'':`<button class="btn" onclick="confirmSample()">Load sample book</button>`}
     </div>
     <div class="set-row">
@@ -1587,14 +1483,6 @@ function pageSettings(){
 async function manualSync(){
   try{ await pushToDrive(); toast('Saved to Google Drive'); rerender('settings'); }
   catch(e){ toast('Could not reach Drive','error'); }
-}
-async function connectGoogleFromSettings(){
-  try{
-    await signInWithGoogle();
-    toast('Google Drive connected');
-    startApp();
-    navigate('#/settings');
-  }catch(e){ toast(e.message||'Could not connect Google','error'); }
 }
 function saveBusiness(e){
   e.preventDefault();
@@ -1613,46 +1501,6 @@ function doWipe(){
   state = freshState();
   state.business = keepBusiness;
   save(); closeModal(); toast('All data cleared'); navigate('#/dashboard');
-}
-function openChangePassword(){
-  openModal(`<form onsubmit="return doChangePassword(event)">
-    <div class="modal-head"><h3>Change password</h3><button type="button" class="close-x" onclick="closeModal()">${closeIcon()}</button></div>
-    <div class="modal-body">
-      <div id="cpErr"></div>
-      <div class="form-field full" style="margin-bottom:12px;"><label>Current password</label><input class="input" type="password" name="cur" required></div>
-      <div class="form-field full" style="margin-bottom:12px;"><label>New password</label><input class="input" type="password" name="new1" required minlength="6"></div>
-      <div class="form-field full"><label>Repeat new password</label><input class="input" type="password" name="new2" required minlength="6"></div>
-      <p class="shint" style="margin-top:12px;">Your records are re-encrypted with the new password. There is no way to recover a forgotten password — keep a backup file.</p>
-    </div>
-    <div class="modal-foot"><button type="button" class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" type="submit">Change password</button></div></form>`);
-}
-async function doChangePassword(e){
-  e.preventDefault();
-  const f = Object.fromEntries(new FormData(e.target).entries());
-  const err = document.getElementById('cpErr');
-  err.innerHTML = '';
-  if(f.new1 !== f.new2){ err.innerHTML = `<div class="auth-error">The new passwords do not match.</div>`; return false; }
-  try{
-    const auth = readAuth();
-    if(auth.mode==='aes'){
-      const k = await deriveKey(f.cur, auth.salt);
-      try{ await decryptJSON(k, auth.check); }catch(x){ throw new Error('Current password is incorrect.'); }
-      const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
-      const nk = await deriveKey(f.new1, salt);
-      auth.salt = salt; auth.check = await encryptJSON(nk, {ok:'LOANBOOK'});
-      sessionKey = nk;
-    } else {
-      if(await weakHash(f.cur+'::loanbook') !== auth.weak) throw new Error('Current password is incorrect.');
-      auth.weak = await weakHash(f.new1+'::loanbook');
-    }
-    writeAuth(auth);
-    await persist();
-    await rememberSession();
-    closeModal(); toast('Password changed');
-  }catch(ex){
-    err.innerHTML = `<div class="auth-error">${esc(ex.message)}</div>`;
-  }
-  return false;
 }
 
 /* =========================== BACKUP =========================== */
@@ -2039,79 +1887,19 @@ async function doGoogleSignIn(){
     if(btn){ btn.disabled = false; btn.querySelector('span').textContent = 'Continue with Google'; }
   }
 }
-function showSetup(){
-  /* Readiness, not just configuration: where Google's script is blocked
-     (a sandboxed embed, no connection) the password path is the only one
-     that can actually work, so don't offer a button that cannot run. */
-  const g = googleReady();
-  document.getElementById('authScreen').innerHTML = authShellHTML(`
-    <h2>Set up your book</h2>
-    <p class="auth-sub">${g
-      ? 'Sign in with Google and your book is saved to your own Google Drive — safe if this computer is lost, and the same book on your phone.'
-      : 'This book is for you alone. Choose a username and password — they are needed every time it is opened.'}</p>
-    <div id="authErr"></div>
-    ${g ? googleButton('Continue with Google') + `<div class="auth-or">or use a password</div>` : ''}
-    <form onsubmit="return doSetup(event)">
-      <div class="auth-field"><label>Username</label><input name="u" required ${g?'':'autofocus'} autocomplete="username"></div>
-      <div class="auth-field"><label>Password</label><input name="p1" type="password" required minlength="6" autocomplete="new-password"></div>
-      <div class="auth-field"><label>Repeat password</label><input name="p2" type="password" required minlength="6" autocomplete="new-password"></div>
-      <button class="auth-submit" type="submit">Create account</button>
-    </form>
-    <p class="auth-note">${insecureMode
-      ? 'Note: opened directly from a file, so your browser will not allow encryption. Use the web link instead.'
-      : 'With a password, records are encrypted on this device only — there is no recovery if you forget it, and the phone keeps a separate book.'}</p>`);
-}
-function showLogin(msg){
+function showSignIn(msg){
   const auth = readAuth()||{};
-  const wasGoogle = auth.mode === 'google';
-  /* A Google account has no password to fall back on, so always give it a
-     way back in — even when the script has not loaded, so retrying is possible. */
-  const g = googleReady() || wasGoogle;
+  const returning = !!auth.email;
+  const ready = googleReady();
   document.getElementById('authScreen').innerHTML = authShellHTML(`
-    <h2>Sign in</h2>
-    <p class="auth-sub">Welcome back${auth.username?', '+esc(auth.username.split(' ')[0]):''}.</p>
+    <h2>${returning ? 'Welcome back' : 'Sign in to your book'}</h2>
+    <p class="auth-sub">${returning
+      ? 'Your book is in your Google Drive. Sign in to open it.'
+      : 'Sign in with Google. Your book is kept in your own Google Drive, so it is safe if this computer is lost and it is the same book on your phone.'}</p>
     <div id="authErr">${msg?`<div class="auth-error">${esc(msg)}</div>`:''}</div>
-    ${g ? googleButton(wasGoogle && auth.email ? 'Continue as '+esc(auth.email) : 'Continue with Google') : ''}
-    ${wasGoogle ? '' : `
-      ${g?`<div class="auth-or">or use your password</div>`:''}
-      <form onsubmit="return doLogin(event)">
-        <div class="auth-field"><label>Username</label><input name="u" value="${esc(auth.username||'')}" required autocomplete="username"></div>
-        <div class="auth-field"><label>Password</label><input name="p" type="password" required ${g?'':'autofocus'} autocomplete="current-password"></div>
-        <button class="auth-submit" type="submit">Sign in</button>
-      </form>
-      <p class="auth-note">Forgotten the password? It cannot be recovered — the records are encrypted with it. You would need to start again and restore from a backup file.</p>`}
-    ${wasGoogle ? `<p class="auth-note">Your book lives in your Google Drive as ${DRIVE_FILENAME}.</p>` : ''}`);
-}
-async function doSetup(e){
-  e.preventDefault();
-  const f = Object.fromEntries(new FormData(e.target).entries());
-  const err = document.getElementById('authErr');
-  if(f.p1 !== f.p2){ err.innerHTML = `<div class="auth-error">The passwords do not match.</div>`; return false; }
-  const btn = e.target.querySelector('button'); btn.disabled = true; btn.textContent = 'Setting up…';
-  try{
-    await createAccount(f.u.trim(), f.p1);
-    startApp();
-  }catch(ex){
-    err.innerHTML = `<div class="auth-error">${esc(ex.message)}</div>`;
-    btn.disabled = false; btn.textContent = 'Create account';
-  }
-  return false;
-}
-async function doLogin(e){
-  e.preventDefault();
-  const f = Object.fromEntries(new FormData(e.target).entries());
-  const err = document.getElementById('authErr');
-  const btn = e.target.querySelector('button'); btn.disabled = true; btn.textContent = 'Signing in…';
-  try{
-    const auth = readAuth();
-    if(f.u.trim().toLowerCase() !== (auth.username||'').toLowerCase()) throw new Error('Incorrect username or password.');
-    await unlock(f.p);
-    startApp();
-  }catch(ex){
-    err.innerHTML = `<div class="auth-error">${esc(ex.message)}</div>`;
-    btn.disabled = false; btn.textContent = 'Sign in';
-  }
-  return false;
+    ${googleButton(returning ? 'Continue as '+esc(auth.email) : 'Continue with Google')}
+    ${ready ? '' : `<p class="auth-note">Google sign-in has not loaded. Check your internet connection and reload the page.</p>`}
+    <p class="auth-note">LoanBook only ever sees the one file it creates in your Drive — nothing else you keep there.</p>`);
 }
 
 /* =========================== BOOT =========================== */
@@ -2126,27 +1914,21 @@ function startApp(){
   renderSyncBadge();
 }
 async function boot(){
-  const auth = readAuth();
-  await waitForGoogle(googleConfigured() ? 5000 : 0);
-  if(!auth){ showSetup(); return; }
-  if(auth.mode === 'google'){
-    if(!googleReady()){ showLogin('Google sign-in could not load. Check your connection and try again.'); return; }
-    try{
-      await requestToken(true);                       // silent, reuses the existing grant
-      sessionKey = 'plain';
-      try{ await loadVault(); }catch(e){ state = freshState(); }
-      if(!state) state = freshState();
-      startApp();
-      syncOnSignIn().catch(e=>console.error(e));      // reconcile with Drive in the background
-    }catch(e){ showLogin(); }
-    return;
-  }
-  if(await restoreSession()){ startApp(); return; }
-  showLogin();
+  await waitForGoogle(6000);
+  if(!readAuth() || !googleReady()){ showSignIn(); return; }
+  /* Returning to a device that has already been granted access: take the
+     token quietly and open the book, rather than making them click again. */
+  try{
+    await requestToken(true);
+    try{ loadVault(); }catch(e){ state = freshState(); }
+    if(!state) state = freshState();
+    startApp();
+    syncOnSignIn().catch(e=>console.error(e));
+  }catch(e){ showSignIn(); }
 }
 /* Coming back to the tab on another device should pick up what changed. */
 document.addEventListener('visibilitychange', ()=>{
-  if(document.visibilityState === 'visible' && isGoogleMode() && googleReady() && state){
+  if(document.visibilityState === 'visible' && isSignedIn() && googleReady() && state){
     syncOnSignIn().then(r=>{ if(r === 'pulled'){ render(); toast('Updated from Drive'); } }).catch(()=>{});
   }
 });
