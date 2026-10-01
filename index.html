@@ -70,7 +70,6 @@ button{font-family:var(--font-body);}
 .auth-brand{display:flex;align-items:center;gap:9px;margin-bottom:22px;}
 .auth-brand svg{width:24px;height:24px;stroke:var(--accent);}
 .auth-brand .bn{font-size:19px;font-weight:700;}
-.auth-brand .bs{font-size:10.5px;letter-spacing:1px;text-transform:uppercase;color:var(--ink-faint);margin-top:1px;}
 .auth-card h2{font-size:17px;margin-bottom:5px;}
 .auth-card .auth-sub{font-size:12.5px;color:var(--ink-soft);margin-bottom:20px;}
 .auth-error{background:var(--red-soft);color:var(--red);font-size:12.5px;padding:9px 12px;border-radius:8px;margin-bottom:14px;line-height:1.45;}
@@ -90,7 +89,6 @@ button{font-family:var(--font-body);}
 .brand-mark{width:24px;height:24px;display:flex;align-items:center;justify-content:center;flex:none;}
 .brand-mark svg{width:21px;height:21px;stroke:#fff;}
 .brand-name{font-size:17px;font-weight:700;color:#fff;letter-spacing:0.2px;}
-.brand-sub{font-size:10px;color:var(--sidebar-text-dim);letter-spacing:1px;text-transform:uppercase;margin-top:1px;}
 nav.mainnav{padding:12px 10px;display:flex;flex-direction:column;gap:2px;flex:1;}
 .navlink{display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:8px;color:var(--sidebar-text-dim);text-decoration:none;font-size:13.5px;font-weight:500;cursor:pointer;border:none;background:none;width:100%;text-align:left;position:relative;}
 .navlink svg{width:17px;height:17px;stroke:currentColor;flex:none;}
@@ -391,10 +389,7 @@ textarea.textarea{width:100%;resize:vertical;min-height:62px;}
   <aside id="sidebar">
     <div class="brand">
       <div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V6a2 2 0 0 1 2-2h9l5 5v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><path d="M14 4v5h5"/><path d="M8 13h8M8 17h5"/></svg></div>
-      <div>
-        <div class="brand-name">LoanBook</div>
-        <div class="brand-sub">Portfolio Ledger</div>
-      </div>
+      <div class="brand-name">LoanBook</div>
     </div>
     <nav class="mainnav" id="mainnav"></nav>
     <div class="sidebar-foot">
@@ -2775,7 +2770,7 @@ function authShellHTML(inner){
   return `<div class="auth-card">
     <div class="auth-brand">
       <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V6a2 2 0 0 1 2-2h9l5 5v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><path d="M14 4v5h5"/><path d="M8 13h8M8 17h5"/></svg>
-      <div><div class="bn">LoanBook</div><div class="bs">Portfolio Ledger</div></div>
+      <div class="bn">LoanBook</div>
     </div>${inner}</div>`;
 }
 function googleLogo(){
