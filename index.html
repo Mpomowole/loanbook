@@ -2114,7 +2114,7 @@ function pageSettings(){
     <div class="section-head"><h3>Security</h3></div>
     <div class="set-row">
       <div><div class="set-label">Your Google account controls access</div>
-      <div class="set-desc">Only you can open this book, because only you can sign in to ${esc(auth.email)}. Turning on two-step verification with Google is the single best thing you can do to protect it.</div></div>
+      <div class="set-desc">Only you can open this book, because only you can sign in to ${esc(auth.email)}. Turning on two-step verification with Google is the single best thing you can do to protect it. <a href="privacy.html" target="_blank" rel="noopener">Privacy policy</a></div></div>
       <button class="btn" onclick="disconnectGoogle()">Disconnect this account</button>
     </div>
     <div class="set-row">
@@ -2803,7 +2803,7 @@ function showSignIn(msg){
     ${button}
     ${note}
     ${returning && st==='ready' ? `<button class="auth-link" onclick="doGoogleSignIn(true)">Use a different Google account</button>` : ''}
-    <p class="auth-note">LoanBook only ever sees the files it creates in your Drive — nothing else you keep there.</p>`);
+    <p class="auth-note">LoanBook only ever sees the files it creates in your Drive — nothing else you keep there. <a href="privacy.html">Privacy policy</a></p>`);
 }
 function showAuthProgress(text){
   authBusy = true;
