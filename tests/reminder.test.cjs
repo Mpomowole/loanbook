@@ -66,7 +66,7 @@ function service(){
     post:body=>JSON.parse(ctx.doPost({postData:{contents: typeof body==='string' ? body : JSON.stringify(body)}}).body),
     live:()=>files.filter(f=>!f.trashed)};
   // The app's fetch(), delivered straight to the service's doPost
-  svc.fetch = async (url, opts)=>{ assert.equal(url, URL_); const out = ctx.doPost({postData:{contents:opts.body}}); return {json:async()=>JSON.parse(out.body)}; };
+  svc.fetch = async (url, opts)=>{ assert.equal(url, URL_); const out = ctx.doPost({postData:{contents:opts.body}}); return {text:async()=>out.body}; };
   return svc;
 }
 function app(svc, email, today){
@@ -143,7 +143,7 @@ test('requests without a valid LoanBook sign-in are refused', ()=>{
 });
 
 test('the app explains a refusal, and spots an out-of-date reminder deployment', async ()=>{
-  const reply = body => async ()=>({json:async()=>body});
+  const reply = body => async ()=>({text:async()=>JSON.stringify(body)});
   const run = async body => {
     const {api} = load({reminderUrl:URL_, fetch: reply(body)});
     api.setAuth({username:'Ade', email:'ade@example.com'}); api.loadLocal(); api.setToken('t', Date.now()+3600e3);
@@ -261,6 +261,33 @@ test('Drive switched off in Google Cloud gives a plain message, not Google\'s ra
   assert.equal(await api.syncNow(), 'error');
   assert.match(api.sync.message, /Google Drive is not switched on for LoanBook yet/);
   assert.ok(!api.sync.message.includes('console.developers'));
+});
+
+test("Google's occasional error page is retried for list updates, but never for the test email", async ()=>{
+  const page = '<!DOCTYPE html><title>Page not found</title>';
+  let calls = 0;
+  const flaky = answers => async ()=>{ const a = answers[Math.min(calls++, answers.length-1)]; return {text:async()=>a}; };
+  const ok = JSON.stringify({ok:true, enabled:true, items:1, version:3});
+  const make = fetchFn => { const {api} = load({reminderUrl:URL_, fetch:fetchFn});
+    api.setAuth({username:'Ade', email:'ade@example.com'}); api.loadLocal(); api.setToken('t', Date.now()+3600e3);
+    api.state.reminders.enabled = true; return api; };
+
+  calls = 0;
+  let api = make(flaky([page, ok]));
+  assert.equal(await api.pushReminders(), 'ok', 'a list update is retried after an error page');
+  assert.equal(calls, 2);
+
+  calls = 0;
+  api = make(flaky([page, page, page, page]));
+  assert.equal(await api.pushReminders(), 'error');
+  assert.equal(calls, 3, 'gives up after three tries until the next save');
+  assert.match(api.meta.reminderError, /error page.*try again shortly/);
+
+  calls = 0;
+  api = make(flaky([page, ok]));
+  assert.equal(await api.pushReminders({test:true}), 'error');
+  assert.equal(calls, 1, 'the test email is not resent');
+  assert.match(api.meta.reminderError, /Check your inbox/);
 });
 
 test('reminder settings sync between devices; the later change wins', ()=>{
