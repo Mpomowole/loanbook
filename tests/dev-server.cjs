@@ -22,7 +22,7 @@ window.google = {accounts:{oauth2:{
         if(mode==='popup_blocked') return cfg.error_callback({type:'popup_failed_to_open'});
         if(mode==='closed') return cfg.error_callback({type:'popup_closed'});
         const tok = await (await fetch('/__token?email='+encodeURIComponent(email))).text();
-        const scope = mode==='noscope' ? 'openid email profile' : 'openid email profile https://www.googleapis.com/auth/drive.file';
+        const scope = mode==='noscope' ? '' : 'https://www.googleapis.com/auth/drive.file';   // LoanBook asks for the Drive permission alone
         cfg.callback({access_token:tok, expires_in:Number(localStorage.getItem('fakeGis.expires')||3600), scope, token_type:'Bearer'});
       }, 120);
     }};

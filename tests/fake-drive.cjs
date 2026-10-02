@@ -28,6 +28,7 @@ function createDrive(){
     const email = tokens.get(auth);
     if(!email) return {status:401, body:JSON.stringify({error:{message:'Invalid Credentials'}})};
     const mine = f => f.owner===email;
+    if(p==='/drive/v3/about') return {status:200, body:JSON.stringify({user:{displayName: email.split('@')[0].replace(/\./g,' ').replace(/\b\w/g,c=>c.toUpperCase()), emailAddress: email}})};
     if(p==='/oauth2/v3/userinfo') return {status:200, body:JSON.stringify({email, name: email.split('@')[0].replace(/\./g,' ').replace(/\b\w/g,c=>c.toUpperCase())})};
     if(p==='/drive/v3/files' && method==='GET'){
       const q = u.searchParams.get('q')||'';

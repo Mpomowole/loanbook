@@ -467,7 +467,14 @@ const GOOGLE_CLIENT_ID = '108999565212-hm2sdqajqq3hos8mg5ids1aa36hgr35f.apps.goo
 const REMINDER_SERVICE_URL = 'https://script.google.com/macros/s/AKfycbwfvwMrsWJrSJI4mv9uVKskjohTfrYh7SD5eQWwkh6KB88tVda33Hx8K-zcaHNZgj71/exec';
 const GAPI = 'https://www.googleapis.com';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
-const SCOPES = 'openid email profile ' + DRIVE_SCOPE;
+/* LoanBook asks Google for ONE permission: the files it creates in the
+   owner's Drive. Asked for on its own, Google shows a plain Allow / Cancel
+   screen. Asked for together with sign-in, Google shows tick boxes that are
+   easy to scroll past, leaving the book with nowhere to save. The owner's
+   name and email come from Drive itself. */
+const SCOPES = DRIVE_SCOPE;
+const EMAIL_SCOPES = 'openid email';   // only if Drive keeps the email address private
+const NEED_DRIVE = 'LoanBook keeps your book in your own Google Drive, so it needs that permission to work. Click the button again and choose Allow on Google’s screen. LoanBook can only see the files it creates there.';
 const BOOK_FILENAME = 'loanbook.json';
 const COPIES_FOLDER = 'LoanBook daily copies';
 const KEEP_DAILY_COPIES = 60;
@@ -1105,6 +1112,7 @@ function requestToken(opts){
     });
   }
   const cfg = {prompt: opts.prompt!=null ? opts.prompt : ''};
+  if(opts.scope) cfg.scope = opts.scope;
   const hint = opts.hint!==undefined ? opts.hint : (auth && auth.email);
   if(hint) cfg.login_hint = hint;
   try{ tokenClient.requestAccessToken(cfg); }
@@ -1115,13 +1123,13 @@ function onTokenResponse(resp){
   if(!tokenPending) return;
   if(!resp || resp.error){
     const code = resp && resp.error;
-    tokenPending.settle(oauthErr(code==='access_denied' ? 'Google sign-in was cancelled.' : ('Google sign-in did not complete' + (resp && resp.error_description ? ': '+resp.error_description : '.'))));
+    tokenPending.settle(code==='access_denied' ? oauthErr(NEED_DRIVE, 'scope') : oauthErr('Google sign-in did not complete' + (resp && resp.error_description ? ': '+resp.error_description : '.')));
     return;
   }
   const o = google.accounts.oauth2;
   const granted = o.hasGrantedAllScopes ? o.hasGrantedAllScopes(resp, DRIVE_SCOPE) : String(resp.scope||'').split(' ').includes(DRIVE_SCOPE);
   if(!granted){
-    tokenPending.settle(oauthErr('LoanBook was not given permission to keep your book in Google Drive, so it cannot save anything. Try again, and on Google’s screen tick the box that lets LoanBook see, edit and create the files it uses.', 'scope'));
+    tokenPending.settle(oauthErr(NEED_DRIVE, 'scope'));
     return;
   }
   accessToken = resp.access_token;
@@ -1170,7 +1178,20 @@ async function gfetch(path, opts, attempt){
   let detail = ''; try{ detail = JSON.parse(body).error.message; }catch(e){ detail = body.slice(0,120); }
   throw syncErr('other', `Google Drive returned an error (${res.status})${detail ? ': '+detail : ''}.`);
 }
-async function fetchProfile(){ return (await gfetch('/oauth2/v3/userinfo')).json(); }
+/* Name and email from Drive, which the one Drive permission allows. Drive
+   can keep an address private; then an earlier sign-in may still allow
+   reading it. That probe goes round gfetch, so a refusal does not discard
+   the Drive access just granted. */
+async function fetchProfile(){
+  const a = await (await gfetch('/drive/v3/about?fields=user(displayName,emailAddress)')).json();
+  const u = (a && a.user) || {};
+  if(u.emailAddress) return {email:u.emailAddress, name:u.displayName || ''};
+  try{
+    const r = await fetch(GAPI+'/oauth2/v3/userinfo', {headers:{Authorization:'Bearer '+accessToken}});
+    if(r.ok){ const p = await r.json(); if(p.email) return {email:p.email, name:u.displayName || p.name || ''}; }
+  }catch(e){}
+  return {email:'', name:u.displayName || ''};
+}
 async function driveList(q, fields, orderBy, pageSize){
   const params = new URLSearchParams({q, spaces:'drive', fields:'files('+fields+')', pageSize:String(pageSize||50)});
   if(orderBy) params.set('orderBy', orderBy);
@@ -1431,7 +1452,7 @@ function renderSyncBanner(){
   const dirty = !!meta.dirty;
   if(!isAppOpen()){}
   else if(localError){ kind='danger'; text=localError; }
-  else if(sync.state==='scope'){ kind='danger'; text='LoanBook does not have permission to save to your Google Drive, so nothing is being saved there. Click “Give permission” and tick the Drive box on Google’s screen.'; btn='Give permission'; action='reconnectDrive()'; }
+  else if(sync.state==='scope'){ kind='danger'; text='LoanBook does not have permission to save to your Google Drive, so nothing is being saved there. Click “Give permission” and choose Allow on Google’s screen.'; btn='Give permission'; action='reconnectDrive()'; }
   else if(sync.state==='auth' && dirty){ kind='danger'; text='Your latest changes are saved on this device but have not reached Google Drive yet. Reconnect to save them there.'; btn='Reconnect'; action='reconnectDrive()'; }
   else if(sync.state==='auth'){ kind='info'; text='The connection to Google Drive has timed out. Reconnect to pick up anything changed on your other devices.'; btn='Reconnect'; action='reconnectDrive()'; }
   else if(sync.state==='offline' && dirty){ kind='warn'; text='No internet connection. Your changes are kept on this device and will go to Google Drive as soon as the connection is back.'; btn='Try now'; action='retrySync()'; }
@@ -2940,6 +2961,7 @@ function showSignIn(msg){
     ${button}
     ${note}
     ${returning && st==='ready' ? `<button class="auth-link" onclick="doGoogleSignIn(true)">Use a different Google account</button>` : ''}
+    ${returning ? '' : `<p class="auth-note" style="color:var(--ink-soft);"><b>On Google’s next screen, choose Allow.</b> That lets LoanBook keep your book in your Google Drive.</p>`}
     <p class="auth-note">LoanBook only ever sees the files it creates in your Drive — nothing else you keep there. <a href="privacy.html">Privacy policy</a></p>`);
 }
 function showAuthProgress(text){
@@ -2960,25 +2982,45 @@ async function doGoogleSignIn(switchAccount){
   try{
     await tokenReq;
     lastSignInScopeError = false;
-    showAuthProgress('Opening your book…');
-    const profile = await fetchProfile();
-    const email = String(profile.email||'').trim().toLowerCase();
-    if(!email) throw new Error('Google did not share an email address for this account, so the book cannot be opened.');
-    adoptLegacyVault(email, prev && prev.email);
-    auth = {username: profile.name || email, email};
-    writeAuth(auth);
-    loadLocal();
-    if(hasContent(state) || meta.lastSyncAt){ startApp(); syncNow(); return; }
-    showAuthProgress('Opening your book from Google Drive…');
-    const r = await syncNow();
-    if(r==='ok') startApp();
-    else showOpenProblem();
+    await finishSignIn(prev);
   }catch(e){
     console.error(e);
     lastSignInScopeError = e.kind==='scope';
     accessToken = null; auth = null; state = null;
     showSignIn(e.message || 'Sign-in did not complete. Try again.');
   }
+}
+/* Rare: Drive keeps this account's email address private. A second, plain
+   Continue screen (no tick boxes) lets Google share it. */
+function showEmailStep(){
+  authBusy = false;
+  $('authScreen').innerHTML = authShellHTML(`
+    <h2>One more step</h2>
+    <p class="auth-sub">Your Google account keeps its email address private, and LoanBook needs it to know whose book this is. On Google’s next screen, choose Continue.</p>
+    <button class="gbtn" onclick="confirmEmailStep()">${googleLogo()}<span>Continue with Google</span></button>
+    <button class="auth-link" onclick="signOut(true)">Cancel</button>`);
+}
+async function confirmEmailStep(){
+  const prev = readAuth();
+  const req = requestToken({scope:EMAIL_SCOPES, prompt:'consent', hint:''});   // inside the click
+  showAuthProgress('Waiting for Google…');
+  try{ await req; await finishSignIn(prev); }
+  catch(e){ console.error(e); accessToken = null; auth = null; state = null; showSignIn(e.message || 'Sign-in did not complete. Try again.'); }
+}
+async function finishSignIn(prev){
+  showAuthProgress('Opening your book…');
+  const profile = await fetchProfile();
+  const email = String(profile.email||'').trim().toLowerCase();
+  if(!email){ showEmailStep(); return; }
+  adoptLegacyVault(email, prev && prev.email);
+  auth = {username: profile.name || email, email};
+  writeAuth(auth);
+  loadLocal();
+  if(hasContent(state) || meta.lastSyncAt){ startApp(); syncNow(); return; }
+  showAuthProgress('Opening your book from Google Drive…');
+  const r = await syncNow();
+  if(r==='ok') startApp();
+  else showOpenProblem();
 }
 /* A new device that cannot reach Drive must not show an empty book as if
    that were all there is. */
@@ -2987,7 +3029,7 @@ function showOpenProblem(){
   const scope = sync.state==='scope';
   $('authScreen').innerHTML = authShellHTML(`
     <h2>Your book could not be opened from Google Drive</h2>
-    <div class="auth-error">${esc(scope ? 'LoanBook was not given permission to use your Google Drive. Click below and, on Google’s screen, tick the box that lets LoanBook see, edit and create the files it uses.' : (sync.message || 'Google Drive could not be reached.'))}</div>
+    <div class="auth-error">${esc(scope ? 'LoanBook needs permission to keep your book in your Google Drive. Click below and choose Allow on Google’s screen. LoanBook can only see the files it creates there.' : (sync.message || 'Google Drive could not be reached.'))}</div>
     <div class="auth-actions">
       <button class="gbtn" onclick="retryOpen()">${scope ? 'Give Drive permission' : 'Try again'}</button>
     </div>

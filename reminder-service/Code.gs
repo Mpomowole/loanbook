@@ -10,8 +10,9 @@
  * service their reminder settings and the short list of payments still owed
  * (borrower name, phone, loan reference, due date, amount). Every request must
  * carry a Google sign-in token issued to LoanBook; it is checked with Google
- * and the list is filed under that Google account (the token itself is not
- * kept). Once an hour the service emails each user who has reached their
+ * (and the account's address read from Drive when the token does not carry
+ * it) and the list is filed under that Google account. The token itself is
+ * not kept. Once an hour the service emails each user who has reached their
  * chosen time and has not had today's email. Switching reminders off deletes
  * the user's list.
  *
@@ -110,8 +111,14 @@ function verify_(token) {
   if (res.getResponseCode() !== 200) return null;
   const info = JSON.parse(res.getContentText());
   if (info.aud !== CLIENT_ID && info.azp !== CLIENT_ID) return null;
-  if (!info.email || String(info.email_verified) !== 'true') return null;
-  return String(info.email).trim().toLowerCase();
+  if (info.email && String(info.email_verified) === 'true') return String(info.email).trim().toLowerCase();
+  /* LoanBook signs in with the Drive permission alone, so the token may not
+     carry the email; Drive reports the signed-in account's address. */
+  const about = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)',
+    {headers: {Authorization: 'Bearer ' + token}, muteHttpExceptions: true});
+  if (about.getResponseCode() !== 200) return null;
+  const email = (JSON.parse(about.getContentText()).user || {}).emailAddress;
+  return email ? String(email).trim().toLowerCase() : null;
 }
 
 function clean_(req, owner) {

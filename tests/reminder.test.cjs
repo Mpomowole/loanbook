@@ -30,8 +30,15 @@ function service(){
   const folder = {getFilesByName:n=>iter(files.filter(f=>f.name===n)), getFiles:()=>iter(files.slice()), createFile:(n,t)=>mkFile(n,t)};
   const ctx = {
     Date: FakeDate, Math, JSON, Number, String, Object, Array, isFinite, parseInt, console,
-    UrlFetchApp:{fetch:url=>{ const t = decodeURIComponent(url.split('access_token=')[1]); const info = tokens.get(t);
-      return {getResponseCode:()=>info?200:400, getContentText:()=>JSON.stringify(info||{error:'invalid_token'})}; }},
+    UrlFetchApp:{fetch:(url, opts)=>{
+      if(url.includes('/drive/v3/about')){
+        const info = tokens.get(String((opts.headers||{}).Authorization||'').replace(/^Bearer /,''));
+        const email = info && info.driveEmail;
+        return {getResponseCode:()=>email?200:401, getContentText:()=>JSON.stringify(email?{user:{emailAddress:email}}:{error:{code:401}})};
+      }
+      const info = tokens.get(decodeURIComponent(url.split('access_token=')[1]));
+      const shown = info && Object.assign({}, info); if(shown) delete shown.driveEmail;
+      return {getResponseCode:()=>info?200:400, getContentText:()=>JSON.stringify(shown||{error:'invalid_token'})}; }},
     DriveApp:{getFoldersByName:()=>iter(folderMade?[folder]:[]), createFolder:()=>{ folderMade++; return folder; }},
     Utilities:{
       DigestAlgorithm:{SHA_256:'sha256'},
@@ -52,7 +59,10 @@ function service(){
   vm.runInContext(SERVICE, ctx);
   const svc = {ctx, sent, files, triggers, tokens,
     setNow:t=>{ now = t; },
-    signIn:(email, aud=CLIENT_ID)=>{ const t = 'tok-'+Math.random().toString(36).slice(2); tokens.set(t, {aud, azp:aud, email, email_verified:'true'}); return t; },
+    /* LoanBook now signs in with the Drive permission alone, so by default the
+       token carries no email and the service must ask Drive whose it is. */
+    signIn:(email, aud=CLIENT_ID, withEmail=false)=>{ const t = 'tok-'+Math.random().toString(36).slice(2);
+      tokens.set(t, withEmail ? {aud, azp:aud, email, email_verified:'true'} : {aud, azp:aud, scope:'https://www.googleapis.com/auth/drive.file', driveEmail:email}); return t; },
     post:body=>JSON.parse(ctx.doPost({postData:{contents: typeof body==='string' ? body : JSON.stringify(body)}}).body),
     live:()=>files.filter(f=>!f.trashed)};
   // The app's fetch(), delivered straight to the service's doPost
@@ -192,6 +202,26 @@ test('each Google account has its own list', async ()=>{
   svc.setNow(lagos('2026-10-01', 7)); svc.ctx.sendDue();
   assert.deepEqual(svc.sent.map(m=>m.to).sort(), ['ade@example.com','other@example.com']);
   assert.ok(!svc.sent.find(m=>m.to==='other@example.com').htmlBody.includes('Amaka'), 'nobody sees another account\'s borrowers');
+});
+
+test('the service identifies the account from either kind of LoanBook sign-in', ()=>{
+  const svc = service();
+  const body = {settings:{enabled:true, timeZone:'Africa/Lagos'}, items:[]};
+  assert.equal(svc.post(Object.assign({token:svc.signIn('drive.only@example.com')}, body)).ok, true, 'Drive permission alone');
+  assert.equal(svc.post(Object.assign({token:svc.signIn('older@example.com', CLIENT_ID, true)}, body)).ok, true, 'token that carries the email');
+  assert.deepEqual(svc.live().map(f=>JSON.parse(f.content).owner).sort(), ['drive.only@example.com','older@example.com']);
+});
+
+test('the app reads the name and email from Drive, needing no separate sign-in permission', async ()=>{
+  const {createDrive} = require('./fake-drive.cjs');
+  const drive = createDrive();
+  const {api} = load({fetch: drive.fetchFor()});
+  api.setToken(drive.issueToken('ade.martins@example.com'), Date.now()+3600e3);
+  const p = await api.fetchProfile();
+  assert.equal(p.email, 'ade.martins@example.com');
+  assert.equal(p.name, 'Ade Martins');
+  assert.ok(drive.log.some(l=>l.startsWith('GET /drive/v3/about')));
+  assert.ok(!drive.log.some(l=>l.includes('userinfo')), 'no separate sign-in permission needed');
 });
 
 test('a bad time zone or address falls back safely', ()=>{
