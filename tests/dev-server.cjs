@@ -3,10 +3,12 @@
 // sync, two devices — can be exercised in a browser without a Google account.
 // localhost:PORT and 127.0.0.1:PORT keep separate browser storage, so they act
 // as two devices sharing one fake Drive.  Start with:  node tests/dev-server.cjs
-const http = require('http'), fs = require('fs');
+const http = require('http'), fs = require('fs'), path = require('path');
 const {createDrive} = require('./fake-drive.cjs');
 const PORT = Number(process.env.PORT || 8765);
-const INDEX = process.env.INDEX || require('path').join(__dirname, '..', 'index.html');
+const ROOT = path.join(__dirname, '..');
+const INDEX = process.env.INDEX || path.join(ROOT, 'index.html');
+const TYPES = {'.html':'text/html; charset=utf-8', '.svg':'image/svg+xml', '.png':'image/png', '.webmanifest':'application/manifest+json'};
 const drive = createDrive();
 
 const FAKE_GIS = `
@@ -55,6 +57,12 @@ http.createServer((req, res)=>{
       const r = drive.handle(req.method, req.url, req.headers, body);
       if(r.network){ req.socket.destroy(); return; }
       return send(r.status, r.body, 'application/json');
+    }
+    // Other site files (privacy page, icons, manifest) as GitHub Pages would serve them
+    const file = path.join(ROOT, decodeURIComponent(u.pathname));
+    if(file.startsWith(ROOT + path.sep) && TYPES[path.extname(file)] && fs.existsSync(file) && !file.includes(path.sep + 'tests' + path.sep)){
+      res.writeHead(200, {'Content-Type':TYPES[path.extname(file)], 'Cache-Control':'no-store'});
+      return res.end(fs.readFileSync(file));
     }
     send(404, 'not found');
   });

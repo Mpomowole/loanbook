@@ -6,7 +6,10 @@
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#0F2148">
 <title>LoanBook</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232158A6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19V6a2 2 0 0 1 2-2h9l5 5v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z'/%3E%3Cpath d='M14 4v5h5'/%3E%3Cpath d='M8 13h8M8 17h5'/%3E%3C/svg%3E">
+<link rel="icon" href="icons/app-icon.svg" type="image/svg+xml">
+<link rel="icon" href="icons/icon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -68,8 +71,9 @@ button{font-family:var(--font-body);}
 #authScreen{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--bg);}
 .auth-card{width:100%;max-width:400px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:30px 28px;box-shadow:var(--shadow-md);}
 .auth-brand{display:flex;align-items:center;gap:9px;margin-bottom:22px;}
-.auth-brand svg{width:24px;height:24px;stroke:var(--accent);}
-.auth-brand .bn{font-size:19px;font-weight:700;}
+.auth-brand img{width:30px;height:30px;flex:none;}
+.auth-brand .bn{font-size:20px;font-weight:700;letter-spacing:-0.01em;}
+.auth-brand .bn span{color:var(--accent);}
 .auth-card h2{font-size:17px;margin-bottom:5px;}
 .auth-card .auth-sub{font-size:12.5px;color:var(--ink-soft);margin-bottom:20px;}
 .auth-error{background:var(--red-soft);color:var(--red);font-size:12.5px;padding:9px 12px;border-radius:8px;margin-bottom:14px;line-height:1.45;}
@@ -86,8 +90,7 @@ button{font-family:var(--font-body);}
 #shell.ready{display:flex;}
 #sidebar{width:230px;flex:none;background:var(--sidebar-bg);color:var(--sidebar-text);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow-y:auto;}
 .brand{padding:20px 18px 15px;display:flex;align-items:center;gap:9px;border-bottom:1px solid rgba(255,255,255,0.08);}
-.brand-mark{width:24px;height:24px;display:flex;align-items:center;justify-content:center;flex:none;}
-.brand-mark svg{width:21px;height:21px;stroke:#fff;}
+.brand-mark{width:28px;height:28px;flex:none;display:block;}
 .brand-name{font-size:17px;font-weight:700;color:#fff;letter-spacing:0.2px;}
 nav.mainnav{padding:12px 10px;display:flex;flex-direction:column;gap:2px;flex:1;}
 .navlink{display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:8px;color:var(--sidebar-text-dim);text-decoration:none;font-size:13.5px;font-weight:500;cursor:pointer;border:none;background:none;width:100%;text-align:left;position:relative;}
@@ -388,7 +391,7 @@ textarea.textarea{width:100%;resize:vertical;min-height:62px;}
 <div id="shell">
   <aside id="sidebar">
     <div class="brand">
-      <div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V6a2 2 0 0 1 2-2h9l5 5v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><path d="M14 4v5h5"/><path d="M8 13h8M8 17h5"/></svg></div>
+      <img class="brand-mark" src="icons/logo-white.svg" alt="">
       <div class="brand-name">LoanBook</div>
     </div>
     <nav class="mainnav" id="mainnav"></nav>
@@ -2769,8 +2772,8 @@ let authBusy = false, gisSlow = false, lastSignInScopeError = false;
 function authShellHTML(inner){
   return `<div class="auth-card">
     <div class="auth-brand">
-      <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V6a2 2 0 0 1 2-2h9l5 5v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><path d="M14 4v5h5"/><path d="M8 13h8M8 17h5"/></svg>
-      <div class="bn">LoanBook</div>
+      <img src="icons/logo.svg" alt="">
+      <div class="bn">Loan<span>Book</span></div>
     </div>${inner}</div>`;
 }
 function googleLogo(){
