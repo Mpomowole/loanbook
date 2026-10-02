@@ -26,7 +26,8 @@ function load(opts){
   opts = opts||{};
   const html = fs.readFileSync(INDEX,'utf8');
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m=>m[1]);
-  const main = scripts.find(s=>s.includes('function buildPeriods'));
+  let main = scripts.find(s=>s.includes('function buildPeriods'));
+  if(opts.reminderUrl) main = main.replace("const REMINDER_SERVICE_URL = '';", `const REMINDER_SERVICE_URL = ${JSON.stringify(opts.reminderUrl)};`);
   const store = new Map();
   const localStorage = {getItem:k=>store.has(k)?store.get(k):null, setItem:(k,v)=>store.set(k,String(v)), removeItem:k=>store.delete(k)};
   const elements = {};
@@ -56,7 +57,7 @@ function load(opts){
   get TODAY(){ return TODAY; }, set TODAY(v){ TODAY = v; bumpRev(); },
   setAuth(a){ auth = a; },
   get meta(){ return meta; },
-  syncNow, get sync(){ return sync; }, loadLocal, persistLocal,
+  syncNow, get sync(){ return sync; }, loadLocal, persistLocal, pushReminders, reminderPayload,
   setToken(t, exp){ accessToken = t; tokenExpiry = exp; },
 };`, ctx, {filename:'index.html.js'});
   return {api: ctx.__api, ctx, store};

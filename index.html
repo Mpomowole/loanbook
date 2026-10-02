@@ -317,11 +317,6 @@ textarea.textarea{width:100%;resize:vertical;min-height:62px;}
 .switch input:checked + .slider::before{transform:translateX(20px);}
 .switch input:focus-visible + .slider{outline:2px solid var(--accent);outline-offset:2px;}
 .form-field label.check{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500;color:var(--ink);cursor:pointer;}
-.setup-steps{margin-top:16px;border:1px solid var(--border);border-radius:10px;padding:12px 14px;background:var(--surface-2);}
-.setup-steps summary{cursor:pointer;font-weight:600;font-size:13px;}
-.setup-steps ol{margin:12px 0 8px;padding-left:20px;font-size:13px;line-height:1.6;}
-.setup-steps li{margin-bottom:12px;}
-.setup-steps li .btn{margin-bottom:4px;}
 .callout{background:var(--gold-soft);border-radius:9px;padding:12px 14px;font-size:12.5px;color:#6b4c12;line-height:1.5;}
 .callout.info{background:var(--accent-soft);color:var(--accent-strong);}
 .callout.danger{background:var(--red-soft);color:var(--red);}
@@ -466,6 +461,10 @@ textarea.textarea{width:100%;resize:vertical;min-height:62px;}
    a static site cannot keep one, and the browser token flow does not use it.
    Access is bounded by the authorised JavaScript origins set on the client. */
 const GOOGLE_CLIENT_ID = '108999565212-hm2sdqajqq3hos8mg5ids1aa36hgr35f.apps.googleusercontent.com';
+/* Web app URL of the reminder service (reminder-service/Code.gs), deployed
+   once from the developer's Google account. Empty until then, which simply
+   shows the daily reminder option as "not available yet". */
+const REMINDER_SERVICE_URL = '';
 const GAPI = 'https://www.googleapis.com';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 const SCOPES = 'openid email profile ' + DRIVE_SCOPE;
@@ -564,12 +563,12 @@ function freshState(){
 /* Daily reminder email preferences. Off until the owner opts in. They travel
    with the book, so switching them on or off on any device applies everywhere,
    and the reminder script in the owner's Google account reads them from Drive. */
-function freshReminders(){ return {enabled:false, email:'', hour:7, aheadDays:7, everyDay:false, timeZone:'', setupDone:false, _u:0}; }
+function freshReminders(){ return {enabled:false, email:'', hour:7, aheadDays:7, everyDay:false, timeZone:'', _u:0}; }
 function normalizeReminders(r){
   r = (r && typeof r==='object') ? r : {};
   const int = (v, lo, hi, d)=>{ const n = parseInt(v,10); return isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
   return {enabled:!!r.enabled, email:String(r.email||'').trim(), hour:int(r.hour,0,23,7), aheadDays:int(r.aheadDays,1,31,7),
-    everyDay:!!r.everyDay, timeZone:String(r.timeZone||''), setupDone:!!r.setupDone, _u:Number(r._u)||0};
+    everyDay:!!r.everyDay, timeZone:String(r.timeZone||''), _u:Number(r._u)||0};
 }
 function hasContent(b){ return !!(b && (b.borrowers.length || b.loans.length || b.payments.length)); }
 
@@ -1245,7 +1244,7 @@ let auth = null;
 let meta = {};
 let sync = {state:'idle', message:'', busy:false, queued:false, timer:null, retryDelay:0, remoteKnown:false};
 let editSeq = 0, localError = '';
-function metaDefaults(){ return {driveFileId:null, lastSyncAt:0, dirty:false, lastDownloadAt:0}; }
+function metaDefaults(){ return {driveFileId:null, lastSyncAt:0, dirty:false, lastDownloadAt:0, reminderSig:'', reminderPushedAt:0, reminderError:''}; }
 function vaultKey(){ return 'loanbook_vault::'+auth.email; }
 function metaKey(){ return 'loanbook_meta::'+auth.email; }
 function readAuth(){ try{ return JSON.parse(localStorage.getItem(AUTH_KEY)||'null'); }catch(e){ return null; } }
@@ -1369,6 +1368,7 @@ async function syncNow(){
     sync.retryDelay = 0;
     setSync('synced');
     if(changedHere) onRemoteChange(resetFromElsewhere);
+    pushReminders().catch(e=>console.warn('Reminder update failed', e));
     return 'ok';
   }catch(e){
     return onSyncError(e);
@@ -2163,23 +2163,26 @@ function pageSettings(){
     </div>
   </div>`;
 }
-/* ---------- daily reminder email ---------- */
+/* ---------- daily reminder email ----------
+   The owner only picks email, time and how far ahead. While reminders are on,
+   LoanBook keeps the reminder service (reminder-service/Code.gs) up to date
+   with the payments still owed; the service emails once a day. Switching off
+   tells the service to delete the list. */
 const REMINDER_HOURS = [5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21];
-let reminderScriptText = null;
 function hourLabel(h){ return `${((h+11)%12)+1}:00 ${h<12?'am':'pm'}`; }
 function browserTZ(){ try{ return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Africa/Lagos'; }catch(e){ return 'Africa/Lagos'; } }
 function reminderSection(){
   const r = state.reminders, to = r.email || auth.email;
-  if(r.enabled && !r.setupDone) preloadReminderScript();
-  const status = !r.enabled ? 'Off' : r.setupDone ? `On · about ${hourLabel(r.hour)} each day` : 'On · one-time setup needed';
+  const available = !!REMINDER_SERVICE_URL;
+  const status = !available ? 'Not available yet' : !r.enabled ? 'Off' : `On · about ${hourLabel(r.hour)} each day`;
+  const pushed = meta.reminderPushedAt ? `Reminder list last updated ${fmtDateTime(meta.reminderPushedAt)}.` : '';
   return `<div class="section" id="reminders">
     <div class="section-head"><h3>Daily reminder email</h3><span class="shint">${status}</span></div>
     <div class="set-row">
       <div><div class="set-label">Email me a daily summary</div><div class="set-desc">Each morning: who is overdue, who owes today and who pays in the coming days, with their phone numbers. It stays off unless you switch it on, and you can switch it off again at any time.</div></div>
-      <label class="switch"><input type="checkbox" ${r.enabled?'checked':''} onchange="setRemindersOn(this.checked)" aria-label="Email me a daily summary"><span class="slider"></span></label>
+      <label class="switch"><input type="checkbox" ${r.enabled&&available?'checked':''} ${available?'':'disabled'} onchange="setRemindersOn(this.checked)" aria-label="Email me a daily summary"><span class="slider"></span></label>
     </div>
-    ${!r.enabled ? '' : `
-    ${r.setupDone ? '' : `<div class="callout" style="margin:12px 0 4px;">One more step: do the one-time setup below. Until it is done, no emails are sent.</div>`}
+    ${!available ? `<p class="shint" style="margin:10px 0 0;">Reminders are being switched on for LoanBook. This option will work as soon as that is done.</p>` : !r.enabled ? '' : `
     <form onsubmit="return saveReminders(event)" style="margin-top:14px;" novalidate>
       <div class="form-grid">
         <div class="form-field"><label>Send to</label><input class="input" type="email" name="email" value="${esc(to)}" autocomplete="email"></div>
@@ -2188,20 +2191,9 @@ function reminderSection(){
         <div class="form-field" style="justify-content:flex-end;"><label class="check"><input type="checkbox" name="everyDay" ${r.everyDay?'checked':''}> Also email on days when nothing is due</label></div>
       </div>
       <div class="form-msg"></div>
-      <div style="margin-top:14px;"><button class="btn btn-primary" type="submit">Save reminder settings</button></div>
+      <div class="set-actions" style="margin-top:14px;"><button class="btn btn-primary" type="submit">Save reminder settings</button><button type="button" class="btn" onclick="sendTestReminder(this)">Send me a test email now</button></div>
     </form>
-    <details class="setup-steps" ${r.setupDone?'':'open'}>
-      <summary>${r.setupDone ? 'Set up on Google ✓ · show the setup steps again' : 'One-time setup on Google (about 2 minutes, easiest on a computer)'}</summary>
-      <ol>
-        <li><button type="button" class="btn btn-sm" onclick="copyReminderScript(this)">Copy the reminder script</button><br>This small program sends the email. It runs in your own Google account and only reads your loanbook.json.</li>
-        <li><a class="btn btn-sm" href="https://script.google.com/create" target="_blank" rel="noopener">Open Google Apps Script</a><br>Sign in as <b>${esc(auth.email)}</b> if Google asks.</li>
-        <li>Click in the code area, select everything (Ctrl+A), and paste the script over it (Ctrl+V). Click the <b>Save</b> icon.</li>
-        <li>Next to the <b>Run</b> button, make sure <b>setup</b> is selected, then click <b>Run</b>.</li>
-        <li>Google asks for permission: <b>Review permissions</b> → choose your account → <b>Advanced</b> → <b>Go to Untitled project (unsafe)</b> → <b>Allow</b>. Google shows this warning for any script you add yourself; Google’s wording about Drive covers reading your loanbook.json, which is all this script opens.</li>
-        <li>Your first summary email arrives straight away. Then click <button type="button" class="btn btn-sm" onclick="markReminderSetup(${r.setupDone?'false':'true'})">${r.setupDone?'Mark as not set up':'I’ve done this'}</button></li>
-      </ol>
-      <p class="shint">To remove it completely: open the project at script.google.com, select <b>stop</b> and click Run, or delete the project.</p>
-    </details>`}
+    ${meta.reminderError ? `<div class="callout danger" style="margin-top:12px;">The reminder list could not be updated: ${esc(meta.reminderError)}. LoanBook will try again the next time it saves.</div>` : (pushed ? `<p class="shint" style="margin:12px 0 0;">${pushed}</p>` : '')}`}
   </div>`;
 }
 function setRemindersOn(on){
@@ -2211,7 +2203,7 @@ function setRemindersOn(on){
   r._u = Date.now();
   logAudit(on ? 'Daily reminders switched on' : 'Daily reminders switched off', 'Data', '—', on ? `Daily summary to ${r.email} at about ${hourLabel(r.hour)}` : 'No more daily summary emails');
   save();
-  toast(!on ? 'Daily reminders off — no more emails' : r.setupDone ? `Daily reminders on — next email around ${hourLabel(r.hour)}` : 'Daily reminders on — now do the one-time setup below');
+  toast(on ? `Daily reminders on — first email around ${hourLabel(r.hour)}` : 'Daily reminders off — no more emails');
   refreshView();
 }
 function saveReminders(e){
@@ -2225,32 +2217,60 @@ function saveReminders(e){
   save(); toast('Reminder settings saved'); refreshView();
   return false;
 }
-function markReminderSetup(done){
-  state.reminders.setupDone = !!done; state.reminders._u = Date.now();
-  save(); if(done) toast(`Done — your summary will arrive around ${hourLabel(state.reminders.hour)} each day`); refreshView();
+/* Only what the email needs: every payment still owed, by due date. */
+function reminderPayload(){
+  const r = state.reminders, items = [];
+  allLoans().forEach(l=>{
+    if(l.ledger.status==='Completed') return;
+    const b = getBorrower(l.borrowerId) || {name:l.borrowerId, phone:''};
+    l.ledger.schedule.forEach(p=>{ if(p.outstanding>0) items.push({name:b.name, phone:b.phone||'', loanId:l.id, dueDate:p.dueDate, amount:p.outstanding}); });
+  });
+  return {
+    settings:{enabled:!!r.enabled, email:r.email || auth.email, hour:r.hour, aheadDays:r.aheadDays, everyDay:r.everyDay, timeZone:r.timeZone || browserTZ()},
+    items: r.enabled ? items : [],
+    owed: r.enabled ? money(allLoans().reduce((s,l)=>s+l.ledger.totalOutstanding,0)) : 0
+  };
 }
-function preloadReminderScript(){
-  if(reminderScriptText) return Promise.resolve(reminderScriptText);
-  return fetch('daily-reminder.js', {cache:'no-cache'}).then(r=>r.ok ? r.text() : Promise.reject(new Error(r.status)))
-    .then(t=>{ if(!/function hourlyCheck/.test(t)) throw new Error('unexpected file'); reminderScriptText = t; return t; });
-}
-/* Copies from text loaded in advance, so the copy happens inside the click
-   (some browsers refuse otherwise). If copying is blocked, the script is
-   shown to select by hand. */
-async function copyReminderScript(btn){
-  let text = reminderScriptText;
-  if(!text){ try{ text = await preloadReminderScript(); }catch(e){ toast('Could not load the script. Check the connection and try again.','error'); return; } }
+/* Called after every successful save to Drive. Sends only when something the
+   email depends on has changed, and nothing at all while reminders are off
+   (beyond one message asking the service to delete the list). */
+async function pushReminders(opts){
+  opts = opts||{};
+  if(!REMINDER_SERVICE_URL || !auth || !state || !tokenValid()) return 'skip';
+  const p = reminderPayload();
+  const sig = p.settings.enabled ? stableStringify(p) : 'off';
+  if(!opts.test){
+    if(!p.settings.enabled && (!meta.reminderSig || meta.reminderSig==='off')) return 'same';
+    if(meta.reminderSig === sig) return 'same';
+  }
   try{
-    await navigator.clipboard.writeText(text);
-    toast('Script copied — now open Google Apps Script');
-    if(btn) btn.textContent = 'Copied ✓';
-  }catch(e){ showReminderScript(text); }
+    const res = await fetch(REMINDER_SERVICE_URL, {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body:JSON.stringify(Object.assign({token:accessToken, action:opts.test?'test':'', asOf:Date.now()}, p))});
+    const j = await res.json();
+    if(!j || !j.ok) throw new Error(j && j.error==='not-signed-in' ? 'Google sign-in could not be confirmed' : ((j && j.error) || 'the reminder service did not accept it'));
+    meta.reminderSig = sig; meta.reminderPushedAt = Date.now(); meta.reminderError = '';
+    saveMeta(); refreshReminderStatus();
+    return 'ok';
+  }catch(e){
+    meta.reminderError = /Failed to fetch|NetworkError|Load failed/i.test(e.message) ? 'no connection to the reminder service' : e.message;
+    saveMeta(); refreshReminderStatus();
+    return 'error';
+  }
 }
-function showReminderScript(text){
-  openModal(`<div class="modal-head"><h3>Reminder script</h3><button class="close-x" onclick="closeModal()">${closeIcon()}</button></div>
-    <div class="modal-body"><p style="font-size:13px;margin-top:0;">Your browser did not allow automatic copying. Click <b>Select all</b>, then copy (Ctrl+C, or long-press → Copy on a phone).</p>
-    <textarea class="textarea mono" id="reminderCode" readonly style="min-height:260px;font-size:11.5px;">${esc(text)}</textarea></div>
-    <div class="modal-foot"><button class="btn" onclick="closeModal()">Close</button><button class="btn btn-primary" onclick="const t=$('reminderCode'); t.focus(); t.select();">Select all</button></div>`, {wide:true, dismissable:true});
+/* Redraws Settings so the status line is current, unless the owner is typing in it. */
+function refreshReminderStatus(){
+  if(!isAppOpen() || parseRoute().page!=='settings') return;
+  const a = document.activeElement;
+  if(a && a.closest && a.closest('#reminders form')) return;
+  refreshView();
+}
+async function sendTestReminder(btn){
+  if(!tokenValid()){ reconnectDrive(); return; }
+  if(btn){ btn.disabled = true; btn.textContent = 'Sending…'; }
+  const r = await pushReminders({test:true});
+  if(r==='ok') toast(`Test email sent to ${state.reminders.email || auth.email} — check the inbox (and spam) in a minute`);
+  else toast('Could not send the test email: ' + (meta.reminderError || 'try again'), 'error');
+  if(parseRoute().page==='settings') refreshView();
 }
 async function manualSync(btn){
   if(!tokenValid()){ reconnectDrive(); return; }

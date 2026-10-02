@@ -55,18 +55,24 @@ a{color:var(--accent);}
     <ul>
       <li>Your book — borrowers, loans, payments and notes — is saved as a file called <b>loanbook.json</b> in your own Google Drive, with dated copies in a folder called <b>LoanBook daily copies</b>.</li>
       <li>A copy is also kept in your browser’s storage on each device you use, so the book opens quickly and keeps working without a connection. Signing out removes it from that device.</li>
-      <li>LoanBook has no server and no database of its own. Your book goes only between your browser and your Google account. It is never sent to the people who built LoanBook or to anyone else.</li>
+      <li>LoanBook has no server and no database of its own. Your book goes only between your browser and your Google account. It is never sent to the people who built LoanBook or to anyone else — the one exception is the short reminder list described below, and only if you switch the daily reminder on.</li>
     </ul>
 
     <h2>What LoanBook does not do</h2>
     <ul>
       <li>It has no advertising, analytics or tracking.</li>
-      <li>It does not sell, share or transfer your information.</li>
+      <li>It does not sell your information or share it with anyone, beyond the optional reminder list described below.</li>
       <li>It does not use your Google data for anything except storing and showing your own book.</li>
     </ul>
 
     <h2>Optional daily reminder email</h2>
-    <p>The daily reminder is off unless you switch it on in <b>Settings → Daily reminder email</b>. To use it, you add a small script to your own Google account (Google Apps Script). The script runs under your account. Once an hour it reads <b>loanbook.json</b> from your Drive, and once a day it emails the summary to the address you chose. It sends your information nowhere else. You can switch the emails off in LoanBook at any time, and you can remove the script from <a href="https://script.google.com">script.google.com</a>.</p>
+    <p>The daily reminder is off unless you switch it on in <b>Settings → Daily reminder email</b>. While it is on:</p>
+    <ul>
+      <li>LoanBook sends the LoanBook reminder service only what the email needs: the payments still owed (borrower name, phone number, loan reference, due date and amount), the total still owed, and your reminder settings (email address, time, time zone, days ahead). It sends an update whenever these change.</li>
+      <li>The reminder service runs on Google Apps Script under the LoanBook developer’s Google account. It keeps only your latest list, uses it only to send your daily email, and sends the email from the developer’s Gmail account under the name “LoanBook”, with replies going to you.</li>
+      <li>To confirm a request really comes from you, LoanBook includes a short-lived Google sign-in token. The service checks it with Google and does not keep it.</li>
+      <li>When you switch the reminder off, LoanBook tells the service to delete your list, and the emails stop.</li>
+    </ul>
 
     <h2>Other services the page loads</h2>
     <p>The page loads fonts from Google Fonts, a charting library from cdnjs (run by Cloudflare), and Google’s sign-in library. These services receive the ordinary technical details that any web request carries, such as your IP address and browser type. They do not receive your book.</p>
