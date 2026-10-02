@@ -27,7 +27,8 @@ function load(opts){
   const html = fs.readFileSync(INDEX,'utf8');
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m=>m[1]);
   let main = scripts.find(s=>s.includes('function buildPeriods'));
-  if(opts.reminderUrl) main = main.replace("const REMINDER_SERVICE_URL = '';", `const REMINDER_SERVICE_URL = ${JSON.stringify(opts.reminderUrl)};`);
+  // Tests never talk to the real reminder service: it is off unless a test supplies its own.
+  main = main.replace(/const REMINDER_SERVICE_URL = '[^']*';/, `const REMINDER_SERVICE_URL = ${JSON.stringify(opts.reminderUrl || '')};`);
   const store = new Map();
   const localStorage = {getItem:k=>store.has(k)?store.get(k):null, setItem:(k,v)=>store.set(k,String(v)), removeItem:k=>store.delete(k)};
   const elements = {};

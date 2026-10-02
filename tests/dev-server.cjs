@@ -36,7 +36,7 @@ function page(){
   html = html.replace(/<script src="https:\/\/accounts\.google\.com\/gsi\/client"[^>]*><\/script>/,
     `<script src="/fake-gis.js" async onload="__gisLoaded()" onerror="__gisFailed()"></script>`);
   html = html.replace("const GAPI = 'https://www.googleapis.com';", "const GAPI = location.origin + '/gapi';");
-  html = html.replace("const REMINDER_SERVICE_URL = '';", "const REMINDER_SERVICE_URL = location.origin + '/__reminders';");
+  html = html.replace(/const REMINDER_SERVICE_URL = '[^']*';/, "const REMINDER_SERVICE_URL = location.origin + '/__reminders';");   // never the real service
   return html;
 }
 
