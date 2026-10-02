@@ -8,7 +8,7 @@ const {createDrive} = require('./fake-drive.cjs');
 const PORT = Number(process.env.PORT || 8765);
 const ROOT = path.join(__dirname, '..');
 const INDEX = process.env.INDEX || path.join(ROOT, 'index.html');
-const TYPES = {'.html':'text/html; charset=utf-8', '.svg':'image/svg+xml', '.png':'image/png', '.webmanifest':'application/manifest+json'};
+const TYPES = {'.html':'text/html; charset=utf-8', '.svg':'image/svg+xml', '.png':'image/png', '.webmanifest':'application/manifest+json', '.js':'application/javascript; charset=utf-8'};
 const drive = createDrive();
 
 const FAKE_GIS = `
