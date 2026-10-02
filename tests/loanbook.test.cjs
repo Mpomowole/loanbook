@@ -128,6 +128,47 @@ test('amounts can be typed with commas and the naira sign', ()=>{
   assert.equal(api.parseRate('4.5%'), 4.5);
   assert.ok(Number.isNaN(api.parseRate('')));
 });
+test('a phone number is found however it is typed', ()=>{
+  const {api} = load();
+  assert.ok(api.phoneMatches('0803 456 7890', '08034567890'));
+  assert.ok(api.phoneMatches('0803-456-7890', '456 78'));
+  assert.ok(api.phoneMatches('+234 803 456 7890', '803456'));
+  assert.ok(!api.phoneMatches('0803 456 7890', '12'), 'too short to mean anything');
+  assert.ok(!api.phoneMatches('0803 456 7890', 'amaka 0803'), 'a name search is not a phone search');
+});
+
+test("the borrower page shows the next payment due, not an overdue one, and notes on their loans", ()=>{
+  const api = fresh(); api.TODAY = '2026-08-01';
+  const b = api.addBorrower({name:'Amaka Osu'});
+  const l = api.addLoan({borrowerId:b.id, principal:500000, rate:5, structure:'interest-only', months:3, startDate:'2026-06-15', firstPaymentDate:'2026-07-15'});
+  api.addNote({loanId:l.id, text:'Promised to pay on Friday'});
+  api.addNote({borrowerId:b.id, text:'Reliable customer'});
+  const html = api.pageBorrower(b.id);
+  const next = /Next payment<\/div><div class="st-value">([^<]*)</.exec(html)[1];
+  assert.equal(next, '15 Aug 2026', 'July is overdue; the next payment due is August');
+  assert.match(html, /Promised to pay on Friday/);
+  assert.match(html, /Reliable customer/);
+  assert.ok(html.includes(`on <a href="#/loans/${l.id}">${l.id}</a>`), 'a loan note says which loan');
+});
+
+test("a loan's history keeps payments that were later deleted", ()=>{
+  const api = fresh(); api.TODAY = '2026-08-01';
+  const b = api.addBorrower({name:'Amaka Osu'});
+  const l1 = api.addLoan({borrowerId:b.id, principal:500000, rate:5, structure:'interest-only', months:3, startDate:'2026-06-15', firstPaymentDate:'2026-07-15'});
+  const l10 = api.addLoan({borrowerId:b.id, principal:1000, rate:0, structure:'interest-only', months:1, startDate:'2026-06-15', firstPaymentDate:'2026-07-15'});
+  const p = api.addPayment({loanId:l1.id, borrowerId:b.id, date:'2026-07-15', amount:25000, method:'Cash'});
+  api.deletePayment(p.id);
+  const html = api.pageLoan(l1.id);
+  assert.match(html, /₦25,000 dated 15 Jul 2026 on LN-0001 from Amaka Osu deleted/);
+  assert.ok(!api.pageLoan(l10.id).includes('₦25,000 dated'), 'another loan is not shown it');
+});
+
+test('a book with no creation time reads the same every time', ()=>{
+  const {api} = load();
+  const legacy = {borrowers:[], loans:[], payments:[]};
+  assert.equal(api.canonical(api.normalizeBook(clone(legacy))), api.canonical(api.normalizeBook(clone(legacy))));
+});
+
 test("inline handler arguments survive quotes (O'Brien)", ()=>{
   const {api} = load();
   const attr = api.jsArg("O'Brien \"Jr\" </script>");

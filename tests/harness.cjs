@@ -58,7 +58,7 @@ function load(opts){
   get TODAY(){ return TODAY; }, set TODAY(v){ TODAY = v; bumpRev(); },
   setAuth(a){ auth = a; },
   get meta(){ return meta; },
-  syncNow, get sync(){ return sync; }, loadLocal, persistLocal, pushReminders, reminderPayload, fetchProfile,
+  syncNow, get sync(){ return sync; }, loadLocal, persistLocal, pushReminders, reminderPayload, fetchProfile, pageBorrower, pageLoan, phoneMatches,
   setToken(t, exp){ accessToken = t; tokenExpiry = exp; },
 };`, ctx, {filename:'index.html.js'});
   return {api: ctx.__api, ctx, store};

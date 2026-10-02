@@ -132,10 +132,28 @@ test('switching off deletes the list from the service', async ()=>{
 test('requests without a valid LoanBook sign-in are refused', ()=>{
   const svc = service();
   const body = {settings:{enabled:true, email:'victim@example.com'}, items:[{name:'X', loanId:'L', dueDate:'2026-10-01', amount:5}]};
-  assert.deepEqual(svc.post(Object.assign({token:'forged'}, body)), {ok:false, error:'not-signed-in'});
-  assert.deepEqual(svc.post(Object.assign({token:svc.signIn('a@b.com', 'some-other-app')}, body)), {ok:false, error:'not-signed-in'});
-  assert.deepEqual(svc.post('not json'), {ok:false, error:'bad-request'});
+  const r1 = svc.post(Object.assign({token:'forged'}, body));
+  assert.equal(r1.ok, false); assert.equal(r1.error, 'token-rejected');
+  const r2 = svc.post(Object.assign({token:svc.signIn('a@b.com', 'some-other-app')}, body));
+  assert.equal(r2.ok, false); assert.equal(r2.error, 'wrong-app');
+  assert.equal(svc.post(body).error, 'not-signed-in');
+  assert.equal(svc.post('not json').error, 'bad-request');
+  for(const r of [r1, r2]) assert.equal(r.version, 3, 'every reply says which version is running');
   assert.equal(svc.files.length, 0);
+});
+
+test('the app explains a refusal, and spots an out-of-date reminder deployment', async ()=>{
+  const reply = body => async ()=>({json:async()=>body});
+  const run = async body => {
+    const {api} = load({reminderUrl:URL_, fetch: reply(body)});
+    api.setAuth({username:'Ade', email:'ade@example.com'}); api.loadLocal(); api.setToken('t', Date.now()+3600e3);
+    api.state.reminders.enabled = true;
+    assert.equal(await api.pushReminders(), 'error');
+    return api.meta.reminderError;
+  };
+  assert.match(await run({ok:false, error:'not-signed-in'}), /older version.*New version/);
+  assert.match(await run({ok:false, error:'drive-lookup-failed', detail:'403 Drive API disabled', version:3}), /confirm your Google account through Drive \(403 Drive API disabled\)/);
+  assert.match(await run({ok:false, error:'token-rejected', detail:'invalid_token', version:3}), /did not accept the sign-in/);
 });
 
 test('the daily email matches the app ledger to the naira, once a day at the chosen time', async ()=>{

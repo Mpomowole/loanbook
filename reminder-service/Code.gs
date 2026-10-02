@@ -31,6 +31,10 @@ const CLIENT_ID = '108999565212-hm2sdqajqq3hos8mg5ids1aa36hgr35f.apps.googleuser
 const APP_URL = 'https://mpomowole.github.io/loanbook/';
 const FOLDER_NAME = 'LoanBook reminder service';
 const MAX_ITEMS = 2000;
+/* Reported in every reply, so LoanBook can tell when the deployment is out of
+   date (editing the code does not change what the web app runs until a new
+   version is deployed). */
+const VERSION = 3;
 
 /* Installs the hourly send. Safe to run again. */
 function setup() {
@@ -50,8 +54,14 @@ function doGet() {
 function doPost(e) {
   let req;
   try { req = JSON.parse(e.postData.contents); } catch (err) { return json_({ok: false, error: 'bad-request'}); }
-  const owner = verify_(req && req.token);
-  if (!owner) return json_({ok: false, error: 'not-signed-in'});
+  let who;
+  try { who = identify_(req && req.token); }
+  catch (err) { console.error('Sign-in check failed', err); return json_({ok: false, error: 'check-failed', detail: short_(err && err.message || err)}); }
+  if (!who.email) {
+    console.warn('Sign-in not confirmed: ' + who.error + (who.detail ? ' — ' + who.detail : ''));
+    return json_({ok: false, error: who.error, detail: who.detail || ''});
+  }
+  const owner = who.email;
   const key = key_(owner);
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
@@ -105,21 +115,29 @@ function sendDue() {
 
 /* ------------------------------------------------------------------------ */
 
-function verify_(token) {
-  if (!token || typeof token !== 'string' || token.length > 4096) return null;
+/* Returns {email} for a genuine LoanBook sign-in, or {error, detail} saying
+   exactly why not, so a failure can be read in LoanBook and in Executions. */
+function identify_(token) {
+  if (!token || typeof token !== 'string' || token.length > 4096) return {error: 'not-signed-in'};
   const res = UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo?access_token=' + encodeURIComponent(token), {muteHttpExceptions: true});
-  if (res.getResponseCode() !== 200) return null;
+  if (res.getResponseCode() !== 200) return {error: 'token-rejected', detail: googleError_(res)};
   const info = JSON.parse(res.getContentText());
-  if (info.aud !== CLIENT_ID && info.azp !== CLIENT_ID) return null;
-  if (info.email && String(info.email_verified) === 'true') return String(info.email).trim().toLowerCase();
+  if (info.aud !== CLIENT_ID && info.azp !== CLIENT_ID) return {error: 'wrong-app', detail: String(info.aud || info.azp || '')};
+  if (info.email && String(info.email_verified) === 'true') return {email: String(info.email).trim().toLowerCase()};
   /* LoanBook signs in with the Drive permission alone, so the token may not
      carry the email; Drive reports the signed-in account's address. */
-  const about = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)',
+  const about = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/about?fields=user%28emailAddress%29',
     {headers: {Authorization: 'Bearer ' + token}, muteHttpExceptions: true});
-  if (about.getResponseCode() !== 200) return null;
+  if (about.getResponseCode() !== 200) return {error: 'drive-lookup-failed', detail: about.getResponseCode() + ' ' + googleError_(about)};
   const email = (JSON.parse(about.getContentText()).user || {}).emailAddress;
-  return email ? String(email).trim().toLowerCase() : null;
+  return email ? {email: String(email).trim().toLowerCase()} : {error: 'no-email'};
 }
+function googleError_(res) {
+  const text = res.getContentText();
+  try { const j = JSON.parse(text); return short_((j.error && (j.error.message || j.error)) || j.error_description || text); }
+  catch (err) { return short_(text); }
+}
+function short_(s) { return String(s == null ? '' : s).slice(0, 200); }
 
 function clean_(req, owner) {
   const s = req.settings || {};
@@ -176,6 +194,7 @@ function remove_(key) {
   PropertiesService.getScriptProperties().deleteProperty('sent:' + key);
 }
 function json_(o) {
+  o.version = VERSION;
   return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON);
 }
 

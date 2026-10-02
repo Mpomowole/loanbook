@@ -389,6 +389,13 @@ textarea.textarea{width:100%;resize:vertical;min-height:62px;}
   .kpi-value.mono{font-size:15px;}
   .kpi-sub{font-size:10.5px;}
   .calc-preview{grid-template-columns:1fr;}
+  /* The confirmation letter's schedule fits a phone screen without sideways scrolling. */
+  .modal-body{padding:16px 14px;}
+  .letter{padding:18px 12px;font-size:13px;}
+  .letter table{font-size:11px;}
+  .letter th,.letter td{padding:5px 4px;}
+  .letter th{font-size:9px;letter-spacing:0;}
+  .letter-terms .lt-k{width:118px;}
 }
 </style>
 </head>
@@ -530,6 +537,12 @@ function parseAmount(v){
 }
 function parseRate(v){ const s = String(v==null?'':v).replace(/%/g,'').trim(); return /^\d+(\.\d+)?$/.test(s) ? Number(s) : NaN; }
 function byName(a,b){ return a.name.localeCompare(b.name, undefined, {sensitivity:'base'}); }
+/* A phone number matches however it was typed: "08034567890" finds "0803 456 7890". */
+function phoneMatches(phone, q){
+  const digits = String(q||'').replace(/\D/g,'');
+  if(digits.length < 3 || /[a-z]/i.test(q)) return false;
+  return String(phone||'').replace(/\D/g,'').includes(digits);
+}
 
 const ICONS = {
   dashboard:'<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>',
@@ -568,8 +581,8 @@ function freshState(){
   };
 }
 /* Daily reminder email preferences. Off until the owner opts in. They travel
-   with the book, so switching them on or off on any device applies everywhere,
-   and the reminder script in the owner's Google account reads them from Drive. */
+   with the book, so switching them on or off on any device applies everywhere;
+   whichever device saves next passes them to the reminder service. */
 function freshReminders(){ return {enabled:false, email:'', hour:7, aheadDays:7, everyDay:false, timeZone:'', _u:0}; }
 function normalizeReminders(r){
   r = (r && typeof r==='object') ? r : {};
@@ -615,7 +628,7 @@ function normalizeBook(input){
   if(!input || typeof input!=='object' || Array.isArray(input)) throw new Error('That is not a LoanBook file.');
   const d = input, S = v => v==null ? '' : String(v);
   const b = freshState();
-  b.createdAt = Number(d.createdAt) || b.createdAt;
+  b.createdAt = Number(d.createdAt) || 0;   // never "now": the same book must look the same every time it is read
   b.updatedAt = Number(d.updatedAt) || 0;
   b.resetAt = Number(d.resetAt) || 0;
   if(d.seq && typeof d.seq==='object') for(const k in d.seq) b.seq[k] = Number(d.seq[k])||0;
@@ -1134,8 +1147,19 @@ function onTokenResponse(resp){
   }
   accessToken = resp.access_token;
   tokenExpiry = Date.now() + (Number(resp.expires_in)||3600)*1000 - 120000;
+  saveSession();
   tokenPending.settle(null, accessToken);
 }
+/* Google's access lasts about an hour. Keeping it on this device for that
+   hour means a reload, or a phone reopening the tab, goes straight back into
+   the book instead of asking to sign in again. Cleared on sign-out. */
+const SESSION_KEY = 'loanbook_session';
+function saveSession(){
+  if(!auth || !tokenValid()) return;
+  try{ localStorage.setItem(SESSION_KEY, JSON.stringify({email:auth.email, token:accessToken, expiry:tokenExpiry})); }catch(e){}
+}
+function readSession(){ try{ return JSON.parse(localStorage.getItem(SESSION_KEY)||'null'); }catch(e){ return null; } }
+function clearSession(){ try{ localStorage.removeItem(SESSION_KEY); }catch(e){} }
 function onTokenError(err){
   if(!tokenPending) return;
   const t = err && err.type;
@@ -1166,7 +1190,7 @@ async function gfetch(path, opts, attempt){
   catch(e){ throw syncErr('offline', 'No connection to Google Drive.'); }
   if(res.ok) return res;
   let body = ''; try{ body = await res.text(); }catch(e){}
-  if(res.status===401){ accessToken = null; throw syncErr('auth', 'Access to Google Drive has timed out.'); }
+  if(res.status===401){ accessToken = null; clearSession(); throw syncErr('auth', 'Access to Google Drive has timed out.'); }
   if(res.status===403 && /storageQuotaExceeded/i.test(body)) throw syncErr('other', 'Your Google Drive is full, so the book cannot be saved there. Free some space in Drive.');
   if(res.status===403 && /SERVICE_DISABLED|accessNotConfigured|has not been used in project/i.test(body)) throw syncErr('setup', 'Google Drive is not switched on for LoanBook yet. Whoever set up LoanBook needs to enable the “Google Drive API” in Google Cloud Console, wait a few minutes, then try again.');
   if(res.status===403 && /insufficient|ACCESS_TOKEN_SCOPE/i.test(body)) throw syncErr('scope', 'LoanBook does not have permission to use your Google Drive.');
@@ -1590,9 +1614,14 @@ function render(){
 }
 /* Re-renders in place, keeping the cursor where it was — typing in a search
    box re-draws the page on every key and must not lose focus. */
+let refreshPending = false;
 function refreshView(){
   if(!isAppOpen()) return;
   const a = document.activeElement;
+  /* Someone is typing in a form on the page (letterhead, reminder settings):
+     redraw when they leave it, so nothing they have typed is wiped. */
+  if(a && a.form && !a.id && $('app').contains(a) && a.matches('input,textarea,select')){ refreshPending = true; return; }
+  refreshPending = false;
   const keep = (a && a.id && $('app').contains(a)) ? {id:a.id, s:a.selectionStart, e:a.selectionEnd} : null;
   render();
   if(keep){
@@ -1601,6 +1630,14 @@ function refreshView(){
   }
 }
 function rerender(){ refreshView(); }
+document.addEventListener('focusout', ()=>{
+  if(!refreshPending) return;
+  setTimeout(()=>{
+    const a = document.activeElement;
+    if(a && a.form && !a.id && $('app').contains(a) && a.matches('input,textarea,select')) return;   // moved to another field in the form
+    if(refreshPending) refreshView();
+  }, 0);
+});
 
 /* =========================== BADGES =========================== */
 function statusBadge(s){
@@ -1724,7 +1761,7 @@ function pageBorrowers(){
       outstanding: loans.reduce((s,l)=>s+l.ledger.totalOutstanding,0),
       overdue: loans.reduce((s,l)=>s+l.ledger.overdueAmount,0)};
   });
-  if(q) rows = rows.filter(r=> r.b.name.toLowerCase().includes(q) || (r.b.phone||'').toLowerCase().includes(q) || r.b.id.toLowerCase().includes(q));
+  if(q) rows = rows.filter(r=> r.b.name.toLowerCase().includes(q) || (r.b.phone||'').toLowerCase().includes(q) || phoneMatches(r.b.phone, q) || r.b.id.toLowerCase().includes(q));
   rows.sort((a,b)=> b.overdue-a.overdue || byName(a.b,b.b));
   return `
   <div class="page-head">
@@ -1756,9 +1793,11 @@ function pageBorrower(id){
   const repaid = loans.reduce((s,l)=>s+l.ledger.totalPaid,0);
   const outstanding = loans.reduce((s,l)=>s+l.ledger.totalOutstanding,0);
   const overdue = loans.reduce((s,l)=>s+l.ledger.overdueAmount,0);
-  const nextDue = loans.map(l=>l.ledger.nextDue).filter(Boolean).sort((a,c)=>a.date<c.date?-1:1)[0];
+  /* The next date money falls due from today on; anything earlier is shown as overdue. */
+  const nextDue = loans.flatMap(l=>l.ledger.schedule.filter(p=>p.outstanding>0 && p.dueDate>=TODAY)).sort((a,c)=>a.dueDate<c.dueDate?-1:1)[0];
   const payments = state.payments.filter(p=>p.borrowerId===id).sort((a,c)=>payOrder(c,a));
-  const notes = state.notes.filter(n=>n.borrowerId===id && !n.loanId).sort((a,c)=>c.createdAt-a.createdAt);
+  const loanIds = new Set(loans.map(l=>l.id));
+  const notes = state.notes.filter(n=>(n.borrowerId===id && !n.loanId) || (n.loanId && loanIds.has(n.loanId))).sort((a,c)=>c.createdAt-a.createdAt);
   return `
   <button class="btn btn-ghost btn-sm no-print" onclick="navigate('#/borrowers')" style="margin-bottom:14px;">${icon('arrow')} Borrowers</button>
   <div class="detail-header">
@@ -1783,7 +1822,7 @@ function pageBorrower(id){
     <div class="st"><div class="st-label">Repaid</div><div class="st-value">${fmtNaira(repaid)}</div></div>
     <div class="st"><div class="st-label">Still owed</div><div class="st-value">${fmtNaira(outstanding)}</div></div>
     <div class="st"><div class="st-label">Overdue</div><div class="st-value" style="${overdue>0?'color:var(--red);':''}">${fmtNaira(overdue)}</div></div>
-    <div class="st"><div class="st-label">Next payment</div><div class="st-value">${nextDue?fmtDate(nextDue.date):'—'}</div></div>
+    <div class="st"><div class="st-label">Next payment</div><div class="st-value">${nextDue?fmtDate(nextDue.dueDate):'—'}</div></div>
   </div>
   <div class="grid-2">
     <div>
@@ -1810,13 +1849,13 @@ function pageBorrower(id){
       </div>
       <div class="section">
         <div class="section-head"><h3>Notes</h3><button class="btn btn-sm no-print" onclick="openNoteModal({borrowerId:${jsArg(b.id)}})">Add</button></div>
-        ${notes.length ? `<div class="notes-list">${notes.map(noteHtml).join('')}</div>` : `<p class="shint">No notes yet.</p>`}
+        ${notes.length ? `<div class="notes-list">${notes.map(n=>noteHtml(n, true)).join('')}</div>` : `<p class="shint">No notes yet.</p>`}
       </div>
     </div>
   </div>`;
 }
 function infoRow(label,val,mono){ return `<div style="display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);font-size:12.5px;"><span style="color:var(--ink-soft);flex:none;">${label}</span><span style="text-align:right;word-break:break-word;${mono?'font-family:var(--font-mono);':''}">${esc(val||'—')}</span></div>`; }
-function noteHtml(n){ return `<div class="note-item"><div class="note-text">${esc(n.text)}</div><div class="note-meta">${fmtDateTime(n.createdAt)}</div><button class="note-del no-print" title="Delete note" aria-label="Delete note" onclick="confirmDeleteNote(${jsArg(n.uid)})">×</button></div>`; }
+function noteHtml(n, showLoan){ return `<div class="note-item"><div class="note-text">${esc(n.text)}</div><div class="note-meta">${fmtDateTime(n.createdAt)}${showLoan && n.loanId ? ` · on <a href="${link('loans',n.loanId)}">${esc(n.loanId)}</a>` : ''}</div><button class="note-del no-print" title="Delete note" aria-label="Delete note" onclick="confirmDeleteNote(${jsArg(n.uid)})">×</button></div>`; }
 
 /* =========================== LOANS =========================== */
 function pageLoans(){
@@ -1867,7 +1906,9 @@ function pageLoan(id){
   const pays = getLoanPayments(id).slice().reverse();
   const notes = state.notes.filter(n=>n.loanId===id).sort((a,c)=>c.createdAt-a.createdAt);
   const payIds = new Set(pays.map(p=>p.id));
-  const auditItems = state.audit.filter(a=>a.entityId===id || payIds.has(a.entityId));
+  /* Includes payments since deleted: their log entries name the loan. */
+  const mentions = new RegExp('(^|[^A-Za-z0-9-])' + id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '(?![A-Za-z0-9-])');
+  const auditItems = state.audit.filter(a=>a.entityId===id || payIds.has(a.entityId) || (a.entity==='Payment' && mentions.test(a.detail)));
   return `
   <button class="btn btn-ghost btn-sm no-print" onclick="navigate('#/loans')" style="margin-bottom:14px;">${icon('arrow')} Loans</button>
   <div class="detail-header">
@@ -1930,7 +1971,7 @@ function pageLoan(id){
     <div>
       <div class="section">
         <div class="section-head"><h3>Notes</h3></div>
-        ${notes.length ? `<div class="notes-list">${notes.map(noteHtml).join('')}</div>` : `<p class="shint">No notes on this loan.</p>`}
+        ${notes.length ? `<div class="notes-list">${notes.map(n=>noteHtml(n, false)).join('')}</div>` : `<p class="shint">No notes on this loan.</p>`}
       </div>
       <div class="section">
         <div class="section-head"><h3>History</h3></div>
@@ -2235,6 +2276,7 @@ function saveReminders(e){
   state.reminders = normalizeReminders(Object.assign({}, state.reminders, {email, hour:f.hour, aheadDays:f.aheadDays, everyDay:!!f.everyDay, timeZone:browserTZ()}));
   state.reminders._u = Date.now();
   logAudit('Reminder settings changed','Data','—',`Daily summary to ${email} at about ${hourLabel(state.reminders.hour)}, looking ${state.reminders.aheadDays} days ahead`);
+  if(document.activeElement && document.activeElement.blur) document.activeElement.blur();   // saved with Enter: redraw now
   save(); toast('Reminder settings saved'); refreshView();
   return false;
 }
@@ -2268,7 +2310,7 @@ async function pushReminders(opts){
     const res = await fetch(REMINDER_SERVICE_URL, {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
       body:JSON.stringify(Object.assign({token:accessToken, action:opts.test?'test':'', asOf:Date.now()}, p))});
     const j = await res.json();
-    if(!j || !j.ok) throw new Error(j && j.error==='not-signed-in' ? 'Google sign-in could not be confirmed' : ((j && j.error) || 'the reminder service did not accept it'));
+    if(!j || !j.ok) throw new Error(reminderRefusal(j));
     meta.reminderSig = sig; meta.reminderPushedAt = Date.now(); meta.reminderError = '';
     saveMeta(); refreshReminderStatus();
     return 'ok';
@@ -2276,6 +2318,22 @@ async function pushReminders(opts){
     meta.reminderError = /Failed to fetch|NetworkError|Load failed/i.test(e.message) ? 'no connection to the reminder service' : e.message;
     saveMeta(); refreshReminderStatus();
     return 'error';
+  }
+}
+/* Why the reminder service said no, in words someone can act on. A reply
+   without a version comes from a deployment older than this app expects. */
+const REMINDER_SERVICE_VERSION = 3;
+function reminderRefusal(j){
+  if(!j) return 'the reminder service did not reply';
+  if(!j.version || j.version < REMINDER_SERVICE_VERSION) return 'the reminder service is running an older version. In Google Apps Script, open Deploy → Manage deployments → edit (pencil) → Version: New version → Deploy';
+  const d = j.detail ? ` (${j.detail})` : '';
+  switch(j.error){
+    case 'not-signed-in': return 'the Google sign-in was missing';
+    case 'token-rejected': return 'Google did not accept the sign-in' + d + '. Reconnect and try again';
+    case 'wrong-app': return 'the reminder service is set up for a different Google app' + d;
+    case 'drive-lookup-failed': return 'the reminder service could not confirm your Google account through Drive' + d;
+    case 'no-email': return 'Google Drive did not share your email address with the reminder service';
+    default: return (j.error || 'the reminder service refused') + d;
   }
 }
 /* Redraws Settings so the status line is current, unless the owner is typing in it. */
@@ -2321,8 +2379,10 @@ async function showDailyCopies(){
   }
 }
 async function restoreDailyCopy(fileId, label, btn){
+  const renew = tokenValid() ? null : acquireToken({});   // inside the click, in case access has lapsed
   if(btn){ btn.disabled = true; btn.textContent = 'Opening…'; }
   try{
+    if(renew) await renew;
     const json = await driveDownloadJSON(fileId);
     pendingRestore = {book:extractBook(json), label:`the copy from ${label.charAt(0).toLowerCase()+label.slice(1)}`};
     openRestoreConfirm();
@@ -2362,7 +2422,7 @@ let pendingRestore = null;
 function exportBackup(opts){
   opts = opts||{};
   const payload = {app:'LoanBook', version:SCHEMA, exportedAt:new Date().toISOString(), data:state};
-  const stampStr = new Date().toISOString().slice(11,16).replace(':','');
+  const now = new Date(), stampStr = String(now.getHours()).padStart(2,'0') + String(now.getMinutes()).padStart(2,'0');
   triggerDownload(new Blob([JSON.stringify(payload,null,1)], {type:'application/json'}), `loanbook-backup-${TODAY}-${stampStr}.json`);
   meta.lastDownloadAt = Date.now(); saveMeta();
   if(!opts.silent){ toast('Backup downloaded'); if(parseRoute().page==='settings') refreshView(); }
@@ -2881,7 +2941,7 @@ function onGlobalSearch(q){
   if(!state || !q || !q.trim()){ root.innerHTML=''; root.className=''; return; }
   root.className = 'search-results';
   const ql = q.toLowerCase().trim(), out = [];
-  state.borrowers.forEach(b=>{ if(b.name.toLowerCase().includes(ql)||(b.phone||'').toLowerCase().includes(ql)||b.id.toLowerCase().includes(ql))
+  state.borrowers.forEach(b=>{ if(b.name.toLowerCase().includes(ql)||(b.phone||'').toLowerCase().includes(ql)||phoneMatches(b.phone, ql)||b.id.toLowerCase().includes(ql))
     out.push({t:b.name, m:`Borrower · ${b.id} · ${b.phone||'no phone'}`, go:link('borrowers',b.id)}); });
   state.loans.forEach(l=>{ if(l.id.toLowerCase().includes(ql)||borrowerName(l.borrowerId).toLowerCase().includes(ql))
     out.push({t:l.id, m:`Loan · ${borrowerName(l.borrowerId)} · ${fmtNaira(l.principal)}`, go:link('loans',l.id)}); });
@@ -3015,6 +3075,7 @@ async function finishSignIn(prev){
   adoptLegacyVault(email, prev && prev.email);
   auth = {username: profile.name || email, email};
   writeAuth(auth);
+  saveSession();
   loadLocal();
   if(hasContent(state) || meta.lastSyncAt){ startApp(); syncNow(); return; }
   showAuthProgress('Opening your book from Google Drive…');
@@ -3055,6 +3116,7 @@ function signOut(force){
     return;
   }
   try{ if(auth){ localStorage.removeItem(vaultKey()); localStorage.removeItem(metaKey()); } }catch(e){}
+  clearSession();
   accessToken = null; state = null;
   history.replaceState(null, '', location.pathname + location.search);
   location.reload();
@@ -3100,8 +3162,27 @@ function refreshToday(){
   if(t !== TODAY){ TODAY = t; bumpRev(); if(isAppOpen()) refreshView(); }
 }
 function boot(){
+  const prev = readAuth(), s = readSession();
+  if(prev && prev.email && s && s.token && s.email===String(prev.email).toLowerCase() && s.expiry > Date.now() + 60000){
+    accessToken = s.token; tokenExpiry = s.expiry;
+    showAuthProgress('Opening your book…');
+    finishSignIn(prev).catch(e=>resumeFailed(e, prev));
+    return;
+  }
   showSignIn('');
   setTimeout(()=>{ if(gisStatus()==='loading'){ gisSlow = true; if(!authBusy && !isAppOpen()) showSignIn(''); } }, 12000);
+}
+/* Reopening with no internet still opens the copy on this device: the
+   sign-in is still valid, and it syncs once the connection is back. */
+function resumeFailed(e, prev){
+  console.error(e);
+  if(e.kind==='offline'){
+    auth = {username: prev.username || prev.email, email: String(prev.email).toLowerCase()};
+    loadLocal();
+    if(hasContent(state)){ startApp(); setSync('offline', e.message); return; }
+  }
+  accessToken = null; clearSession(); auth = null; state = null;
+  showSignIn(e.kind==='offline' ? 'No internet connection. Connect and try again.' : e.kind==='auth' ? '' : (e.message || ''));
 }
 
 /* Keep the book current: when returning to the tab, coming back online, and
@@ -3114,11 +3195,19 @@ window.addEventListener('online', ()=>{ if(isAppOpen()) scheduleSync(300); });
 window.addEventListener('offline', ()=>{ if(isAppOpen() && !sync.busy) setSync('offline'); });
 setInterval(()=>{
   refreshToday();
+  if(refreshPending) refreshView();   // a redraw held back while typing; refreshView holds it again if they still are
   if(isAppOpen() && document.visibilityState==='visible' && !sync.busy) syncNow();
 }, 60000);
-/* Another tab of LoanBook on this device saved: fold its changes in here too. */
+/* Another tab of LoanBook on this device saved: fold its changes in here too.
+   If it renewed Google access, use that here as well. */
 window.addEventListener('storage', e=>{
-  if(!auth || !state || e.key !== vaultKey()) return;
+  if(!auth || !state) return;
+  if(e.key === SESSION_KEY){
+    const s = readSession();
+    if(s && s.email===auth.email && s.expiry > tokenExpiry){ accessToken = s.token; tokenExpiry = s.expiry; if(sync.state==='auth') scheduleSync(0); }
+    return;
+  }
+  if(e.key !== vaultKey()) return;
   if(e.newValue === null){ location.reload(); return; }
   try{
     const other = normalizeBook(JSON.parse(e.newValue).plain);
@@ -3126,6 +3215,8 @@ window.addEventListener('storage', e=>{
     if(canonical(r.book) !== canonical(state)){ state = r.book; bumpRev(); refreshView(); }
   }catch(err){ console.error(err); }
 });
+/* The chart library loads after the page; if the dashboard opened first, draw them now. */
+window.addEventListener('load', ()=>{ if(isAppOpen() && parseRoute().page==='dashboard' && state.loans.length) drawCharts(); });
 window.addEventListener('beforeunload', e=>{
   if(auth && state && meta.dirty){ e.preventDefault(); e.returnValue = ''; }
 });
