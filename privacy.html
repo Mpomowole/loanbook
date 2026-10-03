@@ -40,7 +40,7 @@ a{color:var(--accent);}
   <div class="card">
     <a class="brand" href="./"><img src="icons/logo.svg" alt=""><b>Loan<span>Book</span></b></a>
     <h1>Privacy policy</h1>
-    <p class="updated">Last updated 2 October 2026</p>
+    <p class="updated">Last updated 3 October 2026</p>
 
     <p>LoanBook is a private loan ledger: a single web page, at <a href="https://mpomowole.github.io/loanbook/">mpomowole.github.io/loanbook</a>, that a lender uses to record borrowers, loans and repayments. It is a record-keeping tool for the lender only. Borrowers do not use it, and it does not lend money.</p>
 
@@ -52,6 +52,7 @@ a{color:var(--accent);}
     <ul>
       <li>Your book — borrowers, loans, payments and notes — is saved as a file called <b>loanbook.json</b> in your own Google Drive, with dated copies in a folder called <b>LoanBook daily copies</b>.</li>
       <li>A copy is also kept in your browser’s storage on each device you use, so the book opens quickly and keeps working without a connection. So that reopening the page does not ask you to sign in again, your current Google sign-in is kept there too until it expires, within about an hour. Signing out removes both from that device.</li>
+      <li>When you import loans from a spreadsheet, the file is read inside your browser. The file itself is not uploaded anywhere; only the loans and payments you choose to import are added to your book.</li>
       <li>LoanBook has no server and no database of its own. Your book goes only between your browser and your Google account. It is never sent to the people who built LoanBook or to anyone else — the one exception is the short reminder list described below, and only if you switch the daily reminder on.</li>
     </ul>
 
@@ -72,7 +73,7 @@ a{color:var(--accent);}
     </ul>
 
     <h2>Other services the page loads</h2>
-    <p>The page loads fonts from Google Fonts, a charting library from cdnjs (run by Cloudflare), and Google’s sign-in library. These services receive the ordinary technical details that any web request carries, such as your IP address and browser type. They do not receive your book.</p>
+    <p>The page loads fonts from Google Fonts, a charting library from cdnjs (run by Cloudflare), and Google’s sign-in library. When you import an Excel file, it also loads a spreadsheet reader from SheetJS (cdn.sheetjs.com). These services receive the ordinary technical details that any web request carries, such as your IP address and browser type. They do not receive your book.</p>
 
     <h2>Google API Services User Data Policy</h2>
     <p>LoanBook’s use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>

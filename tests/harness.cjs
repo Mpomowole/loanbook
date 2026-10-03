@@ -60,6 +60,9 @@ function load(opts){
   get meta(){ return meta; },
   syncNow, get sync(){ return sync; }, loadLocal, persistLocal, pushReminders, reminderPayload, fetchProfile, pageBorrower, pageLoan, phoneMatches,
   setToken(t, exp){ accessToken = t; tokenExpiry = exp; },
+  parseCSV, autoMap, findHeaderRow, guessSheets, impDate, impAmount, impRate, impMonths, guessStructure, structureFor, IMPORT_FIELDS,
+  buildImportPlan, runImport, undoImport, importContents, pageImport,
+  get imp(){ return imp; }, set imp(v){ imp = v; },
 };`, ctx, {filename:'index.html.js'});
   return {api: ctx.__api, ctx, store};
 }

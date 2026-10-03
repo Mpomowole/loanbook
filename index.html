@@ -320,6 +320,34 @@ textarea.textarea{width:100%;resize:vertical;min-height:62px;}
 .callout{background:var(--gold-soft);border-radius:9px;padding:12px 14px;font-size:12.5px;color:#6b4c12;line-height:1.5;}
 .callout.info{background:var(--accent-soft);color:var(--accent-strong);}
 .callout.danger{background:var(--red-soft);color:var(--red);}
+/* Spreadsheet import */
+.imp-steps{display:flex;gap:6px;flex-wrap:wrap;margin:-4px 0 16px;}
+.imp-steps span{font-size:11.5px;font-weight:600;padding:5px 11px;border-radius:20px;background:var(--surface-2);color:var(--ink-faint);border:1px solid var(--border);}
+.imp-steps span.on{background:var(--accent);color:#fff;border-color:var(--accent);}
+.imp-steps span.done{background:var(--accent-soft);color:var(--accent-strong);border-color:transparent;}
+.imp-drop{border:2px dashed var(--border-strong);border-radius:var(--radius-md);padding:30px 18px;text-align:center;background:var(--surface-2);}
+.imp-sum{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:16px;overflow:hidden;}
+.imp-sum > div{background:var(--surface);padding:13px 16px;}
+.imp-sum span{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:0.6px;color:var(--ink-soft);font-weight:600;}
+.imp-sum b{display:block;font-size:22px;font-weight:600;margin-top:4px;color:var(--ink);}
+.imp-sum small{display:block;font-size:11px;color:var(--ink-faint);}
+.map-grid{display:grid;grid-template-columns:minmax(150px,240px) 1fr;gap:10px 16px;align-items:start;}
+.map-grid .ml{font-size:13px;font-weight:600;padding-top:9px;}
+.map-grid .select{width:100%;max-width:420px;}
+.map-sample{font-size:11.5px;color:var(--ink-faint);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px;}
+td.imp-who{white-space:normal;min-width:190px;max-width:320px;}
+.imp-note{font-size:12px;margin-top:4px;line-height:1.4;}
+.imp-note .e{color:var(--red);font-weight:600;}
+.imp-note .w{color:#8a6216;}
+.imp-note .ok{color:var(--teal);font-weight:600;}
+.imp-note .dupnote{color:var(--ink-faint);}
+tr.imp-err td{background:var(--red-soft);}
+tr.imp-dup td{color:var(--ink-faint);}
+@media(max-width:900px){
+  .imp-sum{grid-template-columns:1fr 1fr;}
+  .map-grid{grid-template-columns:1fr;gap:4px;}
+  .map-grid .ml{padding-top:10px;}
+}
 .danger-zone{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;}
 
 /* ============ LETTER ============ */
@@ -1448,7 +1476,11 @@ function onRemoteChange(wasReset){
   refreshView();
   toast(wasReset ? 'This book was restored or cleared on another device — now showing that version.' : 'Updated with changes from Google Drive');
 }
-function setSync(s, msg){ sync.state = s; sync.message = msg||''; renderSyncBadge(); renderSyncBanner(); }
+function setSync(s, msg){
+  sync.state = s; sync.message = msg||''; renderSyncBadge(); renderSyncBanner();
+  // the import check waits for the Drive book, so it can skip loans already there
+  if(s==='synced' && imp && imp.step==='preview' && isAppOpen() && parseRoute().page==='import') refreshView();
+}
 function renderSyncBadge(){
   const el = $('syncBadge');
   if(!el) return;
@@ -1603,6 +1635,7 @@ function render(){
     else if(page==='payments') app.innerHTML = pagePayments();
     else if(page==='reports') app.innerHTML = pageReports();
     else if(page==='settings') app.innerHTML = pageSettings();
+    else if(page==='import') app.innerHTML = pageImport();
     else app.innerHTML = pageDashboard();
   }catch(err){
     console.error(err);
@@ -1718,6 +1751,7 @@ function emptyStart(){
       <p>Nothing recorded yet.</p>
       <div class="empty-actions">
         <button class="btn btn-primary" onclick="openBorrowerModal()">${icon('plus')} Add a borrower</button>
+        <button class="btn" onclick="navigate('#/import')">${icon('upload')} Import from a spreadsheet</button>
         <button class="btn" onclick="navigate('#/settings')">Restore from a backup</button>
       </div>
     </div>
@@ -1871,6 +1905,7 @@ function pageLoans(){
   <div class="page-head">
     <div><h1>Loans</h1><p class="page-sub">Every loan with live balances and the next date money is due.</p></div>
     <div class="head-actions">
+      <button class="btn" onclick="navigate('#/import')">${icon('upload')} Import</button>
       <button class="btn" onclick="exportLoansCSV()">${icon('download')} Export</button>
       <button class="btn btn-primary" onclick="openLoanModal()">${icon('plus')} New loan</button>
     </div>
@@ -2145,6 +2180,718 @@ function reportBody(tab){
 }
 function printReport(){ document.body.classList.remove('print-letter'); window.print(); }
 
+/* =========================== SPREADSHEET IMPORT ===========================
+   Brings loans already kept in Excel, Google Sheets or CSV into the book.
+   Columns are matched by their headings (any order, any reasonable name),
+   every row is checked and shown before anything is saved, rows with
+   problems are left out, and a loan already in the book is skipped — so the
+   same file can be fixed and imported again safely. Each import is tagged,
+   so it can be undone in one step. */
+const SHEETJS_URL = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+const SHEETJS_SRI = 'sha384-EnyY0/GSHQGSxSgMwaIPzSESbqoOLSexfnSMN2AP+39Ckmn92stwABZynq1JyzdT';
+const IMPORT_FIELDS = {
+  loans: [
+    {k:'name', label:'Borrower name', req:true, syn:['borrower','borrower name','name','names','customer','customer name','client','client name','full name','beneficiary','debtor']},
+    {k:'principal', label:'Amount given', req:true, syn:['amount given','amount','loan amount','principal','capital','amount lent','loan','sum','disbursed','amount disbursed','loan given']},
+    {k:'rate', label:'Monthly interest rate (%)', req:true, syn:['monthly rate','rate','interest rate','rate per month','monthly interest rate','interest','int rate','interest %','rate %','%','monthly rate %']},
+    {k:'months', label:'Tenor (months)', req:true, syn:['months','tenor','tenure','duration','term','period','no of months','number of months','tenor months','loan period']},
+    {k:'startDate', label:'Date given', req:true, syn:['date given','date','start date','start','loan date','disbursement date','date disbursed','issued','date issued','date of loan']},
+    {k:'firstPaymentDate', label:'First payment due', syn:['first payment date','first payment','first due date','first repayment','repayment start','first payment due']},
+    {k:'structure', label:'Repayment type', syn:['repayment type','type','structure','repayment','repayment method','interest type','basis','repayment basis']},
+    {k:'paid', label:'Amount paid so far', syn:['paid so far','amount paid','paid','total paid','repaid','amount repaid','paid to date','collected','total repaid']},
+    {k:'lastPaid', label:'Date of last payment', syn:['date of last payment','last payment date','last payment','last paid','date paid','last repayment']},
+    {k:'phone', label:'Phone', syn:['phone','phone number','mobile','mobile number','tel','telephone','contact','gsm','phone no']},
+    {k:'purpose', label:'Purpose or notes', syn:['purpose or notes','purpose','notes','note','remark','remarks','comment','comments','description']},
+    {k:'ref', label:'Loan reference (links payments)', syn:['loan reference','loan ref','ref','loan id','loan no','loan number','reference']}
+  ],
+  payments: [
+    {k:'name', label:'Borrower name', syn:['borrower','borrower name','name','customer','client','full name','payer','paid by']},
+    {k:'ref', label:'Loan reference', syn:['loan reference','loan ref','loan id','loan no','loan number']},
+    {k:'date', label:'Date received', req:true, syn:['date received','date','payment date','date paid','paid on','received']},
+    {k:'amount', label:'Amount', req:true, syn:['amount','amount paid','amount received','paid','payment','sum']},
+    {k:'method', label:'Method', syn:['method','payment method','mode','channel','means']},
+    {k:'reference', label:'Reference', syn:['reference','ref','teller','teller no','receipt','receipt no','transaction id','transaction ref']},
+    {k:'note', label:'Note', syn:['note','notes','remark','remarks','comment']}
+  ]
+};
+/* The template's example rows, so they are never imported as real loans if
+   someone forgets to delete them. Keep in step with downloadImportTemplate. */
+const TEMPLATE_EXAMPLES = new Set(['chioma okeke|500000|2026-06-15', 'ibrahim musa|300000|2026-05-28', 'bisi adeyemi|150000|2026-07-30',
+  'ibrahim musa|2026-06-28|115000', 'ibrahim musa|2026-07-30|70000']);
+// The template's drop-down choices (no commas: Excel splits the list on them).
+const TEMPLATE_TYPES = ['Interest only (capital at end)', 'Equal instalments', 'Reducing balance'];
+let imp = null;          // the import in progress
+let sheetJsPromise = null;
+
+function loadSheetJS(){
+  if(window.XLSX) return Promise.resolve(window.XLSX);
+  if(!sheetJsPromise) sheetJsPromise = new Promise((resolve, reject)=>{
+    const s = document.createElement('script');
+    s.src = SHEETJS_URL; s.integrity = SHEETJS_SRI; s.crossOrigin = 'anonymous';
+    s.onload = ()=> window.XLSX ? resolve(window.XLSX) : reject(new Error('The Excel reader did not start.'));
+    s.onerror = ()=>{ sheetJsPromise = null; reject(new Error('Excel files cannot be opened right now because the reader did not load. Check the internet connection, or in Excel use File → Save As → CSV and import that file instead.')); };
+    document.head.appendChild(s);
+  });
+  return sheetJsPromise;
+}
+
+/* ---------- reading files ---------- */
+function parseCSV(text){
+  text = String(text||'').replace(/^﻿/, '');
+  const first = text.split(/\r?\n/, 1)[0] || '';
+  const count = ch => first.split(ch).length - 1;
+  const delim = [',', ';', '\t'].sort((a,b)=>count(b)-count(a))[0];
+  const rows = []; let row = [], cell = '', q = false;
+  for(let i=0; i<text.length; i++){
+    const c = text[i];
+    if(q){
+      if(c==='"'){ if(text[i+1]==='"'){ cell += '"'; i++; } else q = false; }
+      else cell += c;
+    } else if(c==='"' && cell==='') q = true;
+    else if(c===delim){ row.push(cell); cell = ''; }
+    else if(c==='\n' || c==='\r'){ if(c==='\r' && text[i+1]==='\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; }
+    else cell += c;
+  }
+  if(cell!=='' || row.length){ row.push(cell); rows.push(row); }
+  return rows;
+}
+function colName(c){ let s = ''; c++; while(c>0){ const m = (c-1)%26; s = String.fromCharCode(65+m) + s; c = Math.floor((c-1)/26); } return s; }
+async function readSpreadsheet(file){
+  if(file.size > 15*1024*1024) throw new Error('That file is too large to be a loan list (over 15 MB).');
+  const name = file.name || 'spreadsheet';
+  if(/\.(csv|txt)$/i.test(name) || file.type==='text/csv'){
+    const rows = parseCSV(await file.text());
+    return {name, date1904:false, sheets:[{name:'Sheet 1', rows, text:rows.map(r=>r.map(String)), rowBase:0, colBase:0}]};
+  }
+  const X = await loadSheetJS();
+  let wb;
+  try{ wb = X.read(await file.arrayBuffer(), {type:'array', dateNF:'dd/mm/yyyy'}); }   // Excel's standard date shows day first, as written here
+  catch(e){ throw new Error('That file could not be read as a spreadsheet. Open it in Excel and save it again, or save it as CSV.'); }
+  const sheets = wb.SheetNames.map(n=>{
+    const ws = wb.Sheets[n];
+    if(!ws || !ws['!ref']) return {name:n, rows:[], text:[], rowBase:0, colBase:0};
+    const range = X.utils.decode_range(ws['!ref']);
+    return {name:n,
+      rows: X.utils.sheet_to_json(ws, {header:1, raw:true, defval:'', blankrows:true}),
+      text: X.utils.sheet_to_json(ws, {header:1, raw:false, defval:'', blankrows:true}),
+      rowBase: range.s.r, colBase: range.s.c};
+  }).filter(s=>s.rows.length);
+  if(!sheets.length) throw new Error('That spreadsheet has no rows in it.');
+  return {name, date1904: !!(wb.Workbook && wb.Workbook.WBProps && wb.Workbook.WBProps.date1904), sheets};
+}
+
+/* ---------- matching columns ---------- */
+function normHead(s){ return String(s==null?'':s).toLowerCase().replace(/[^a-z0-9%]+/g,' ').trim(); }
+function synScore(head, syn){
+  if(!head) return 0;
+  if(head===syn) return 3;
+  const re = new RegExp('(^| )' + syn.replace(/[.*+?^${}()|[\]\\%]/g,'\\$&') + '( |$)');
+  if(re.test(head)) return head.startsWith(syn) || head.endsWith(syn) ? 2 : 1;
+  return 0;
+}
+/* Every heading is scored against every field and the strongest pairs are
+   taken first, so "Date of last payment" goes to the last payment, not to
+   the date the loan was given. */
+function autoMap(headers, fields){
+  const pairs = [];
+  fields.forEach((f,fi)=>headers.forEach((h,c)=>{
+    const n = normHead(h);
+    let best = 0;
+    f.syn.forEach((syn, si)=>{ const sc = synScore(n, syn); if(sc) best = Math.max(best, sc*100 - si); });
+    if(best) pairs.push({k:f.k, c, score:best, fi});
+  }));
+  pairs.sort((a,b)=> b.score-a.score || a.fi-b.fi || a.c-b.c);
+  const map = {}, used = new Set();
+  fields.forEach(f=>{ map[f.k] = -1; });
+  for(const p of pairs){ if(map[p.k]===-1 && !used.has(p.c)){ map[p.k] = p.c; used.add(p.c); } }
+  return map;
+}
+function findHeaderRow(sheet){
+  let bestRow = 0, best = -1;
+  const allSyn = [...IMPORT_FIELDS.loans, ...IMPORT_FIELDS.payments].flatMap(f=>f.syn);
+  for(let r=0; r<Math.min(15, sheet.rows.length); r++){
+    const cells = (sheet.text[r]||[]).map(normHead).filter(Boolean);
+    const score = cells.filter(c=>allSyn.some(s=>synScore(c, s)>=2)).length;
+    if(score > best){ best = score; bestRow = r; }
+  }
+  return bestRow;
+}
+function mapScore(map, kind){ return IMPORT_FIELDS[kind].filter(f=>f.req && map[f.k]>=0).length; }
+function setupSheet(kind, idx){
+  const s = imp.sheets[idx];
+  imp[kind] = {sheet:idx, header:0, map:{}};
+  if(!s) return;
+  imp[kind].header = findHeaderRow(s);
+  imp[kind].map = autoMap(s.text[imp[kind].header]||[], IMPORT_FIELDS[kind]);
+}
+function guessSheets(){
+  let loanIdx = 0, loanBest = -1;
+  imp.sheets.forEach((s,i)=>{
+    const map = autoMap(s.text[findHeaderRow(s)]||[], IMPORT_FIELDS.loans);
+    const score = mapScore(map,'loans')*10 + (/loan/i.test(s.name)?5:0) - (/pay/i.test(s.name)?5:0);
+    if(score > loanBest){ loanBest = score; loanIdx = i; }
+  });
+  setupSheet('loans', loanIdx);
+  let payIdx = -1, payBest = 0;
+  imp.sheets.forEach((s,i)=>{
+    if(i===loanIdx) return;
+    const map = autoMap(s.text[findHeaderRow(s)]||[], IMPORT_FIELDS.payments);
+    const has = mapScore(map,'payments')===2 && (map.name>=0 || map.ref>=0);
+    const score = has ? 10 + (/pay/i.test(s.name)?5:0) : 0;
+    if(score > payBest){ payBest = score; payIdx = i; }
+  });
+  if(payIdx>=0) setupSheet('payments', payIdx); else imp.payments = {sheet:-1, header:0, map:{}};
+}
+
+/* ---------- reading cells ---------- */
+function impCell(sheet, r, c){
+  if(c==null || c<0) return {v:'', w:''};
+  const v = (sheet.rows[r]||[])[c], w = (sheet.text[r]||[])[c];
+  return {v: v==null ? '' : v, w: w==null ? '' : String(w)};
+}
+function impStr(cell){ const w = String(cell.w||'').trim(); return w || String(cell.v==null?'':cell.v).trim(); }
+function impBlank(cell){ return impStr(cell)===''; }
+function impAmount(cell){
+  if(typeof cell.v==='number') return cell.v;
+  let s = impStr(cell).replace(/₦|ngn|naira/ig,'').replace(/^n(?=\d)/i,'').replace(/[,\s]/g,'');
+  const m = /^(\d+(?:\.\d+)?)([km])?$/i.exec(s);
+  if(!m) return NaN;
+  return Number(m[1]) * (m[2] ? (m[2].toLowerCase()==='k' ? 1000 : 1000000) : 1);
+}
+function impRate(cell){
+  const text = impStr(cell), pctSign = text.includes('%');
+  let n = typeof cell.v==='number' ? cell.v : (()=>{ const m = /(\d+(?:\.\d+)?)/.exec(text.replace(/,/g,'')); return m ? Number(m[1]) : NaN; })();
+  if(!isFinite(n)) return {rate:NaN};
+  if(typeof cell.v==='number' && pctSign) n = n*100;          // an Excel cell formatted as a percentage holds 0.05 for 5%
+  else if(!pctSign && n > 0 && n < 0.3) return {rate:money(n*100), note:`rate ${text} read as ${money(n*100)}% a month`};
+  return {rate:money(n)};
+}
+const NUM_WORDS = {one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,eleven:11,twelve:12};
+function impMonths(cell){
+  if(typeof cell.v==='number') return cell.v;
+  const s = impStr(cell).toLowerCase();
+  const years = /\b(years?|yrs?)\b/.test(s) ? 12 : 1;
+  const m = /(\d+(?:\.\d+)?)/.exec(s);
+  if(m) return Number(m[1]) * years;
+  const w = Object.keys(NUM_WORDS).find(k=>new RegExp('\\b'+k+'\\b').test(s));
+  return w ? NUM_WORDS[w] * years : NaN;
+}
+const MONTH_NAMES = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+/* Dates as Excel keeps them (serial numbers) or as text: 15/06/2026,
+   2026-06-15, 15-Jun-2026, June 15 2026. Slashed dates are day first, as
+   written in Nigeria, unless the person says otherwise. */
+function impDate(cell, dayFirst, date1904){
+  if(typeof cell.v==='number'){
+    const n = cell.v;
+    if(n > 20000 && n < 80000){
+      const ms = Date.UTC(1899,11,30) + Math.floor(n + 1e-9 + (date1904 ? 1462 : 0))*86400000;   // a time of day is dropped
+      return new Date(ms).toISOString().slice(0,10);
+    }
+    return '';
+  }
+  if(cell.v instanceof Date && !isNaN(cell.v)) return toISO(cell.v);
+  const s = impStr(cell).toLowerCase().replace(/(\d)(st|nd|rd|th)\b/g,'$1').replace(/,/g,' ').replace(/\s+/g,' ').trim();
+  if(!s) return '';
+  const y2 = y => y < 100 ? 2000 + y : y;
+  const iso = (y,m,d) => { const t = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`; return isISODate(t) ? t : ''; };
+  let m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(s);
+  if(m) return iso(+m[1], +m[2], +m[3]);
+  m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/.exec(s);
+  if(m){
+    let a = +m[1], b = +m[2]; const y = y2(+m[3]);
+    if(a > 12 && b <= 12) return iso(y, b, a);
+    if(b > 12 && a <= 12) return iso(y, a, b);
+    return dayFirst ? iso(y, b, a) : iso(y, a, b);
+  }
+  m = /^(\d{1,2})[ -]([a-z]{3,})\.?[ -](\d{2,4})$/.exec(s);
+  if(m){ const mi = MONTH_NAMES.indexOf(m[2].slice(0,3)); return mi>=0 ? iso(y2(+m[3]), mi+1, +m[1]) : ''; }
+  m = /^([a-z]{3,})\.? (\d{1,2}) (\d{2,4})$/.exec(s);
+  if(m){ const mi = MONTH_NAMES.indexOf(m[1].slice(0,3)); return mi>=0 ? iso(y2(+m[3]), mi+1, +m[2]) : ''; }
+  return '';
+}
+/* Repayment types are typed by hand, so slips are expected: "Reducin
+   balance", "intrest only", "Equal instalmnts". Each word is compared with
+   the words that name a type, allowing a letter or two out. Anything still
+   unclear ("flat", "monthly") is never guessed: the person chooses what it
+   means on the check step, because it decides the whole schedule. */
+const STRUCTURE_WORDS = [
+  ['reducing', ['reducing','reduce','reduced','reduction','diminishing','declining','decreasing']],
+  ['equal', ['equal','instalment','instalments','installment','installments','amortised','amortized','amortisation','amortization','emi']],
+  ['interest-only', ['interest','int','only','bullet','balloon']]
+];
+function editDistance(a, b){   // letters added, dropped, changed or swapped
+  if(Math.abs(a.length - b.length) > 2) return 3;
+  let pp = null, p = Array.from({length:b.length+1}, (_,j)=>j);
+  for(let i=1; i<=a.length; i++){
+    const c = [i];
+    for(let j=1; j<=b.length; j++){
+      c[j] = Math.min(p[j]+1, c[j-1]+1, p[j-1] + (a[i-1]===b[j-1] ? 0 : 1));
+      if(pp && i>1 && j>1 && a[i-1]===b[j-2] && a[i-2]===b[j-1]) c[j] = Math.min(c[j], pp[j-2]+1);
+    }
+    pp = p; p = c;
+  }
+  return p[b.length];
+}
+function wordMatches(w, k){
+  if(w===k) return true;
+  if(k.length < 5) return false;                       // short words must be exact
+  if(w.length >= 5 && k.startsWith(w)) return true;    // "reduc", "instal"
+  return editDistance(w, k) <= (k.length >= 8 ? 2 : 1);
+}
+function guessStructure(text){
+  const words = String(text||'').toLowerCase().match(/[a-z]+/g) || [];
+  for(const [st, keys] of STRUCTURE_WORDS) if(words.some(w=>keys.some(k=>wordMatches(w, k)))) return st;
+  return '';
+}
+function structKey(text){ return String(text||'').toLowerCase().replace(/\s+/g,' ').trim(); }
+/* What a repayment type in the file means: the person's choice if they made
+   one, else the automatic match. Blank cells (or no such column) take the
+   type chosen for them, the usual interest-monthly arrangement by default. */
+function structureFor(text){
+  const k = structKey(text);
+  if(!k) return imp.structDefault || 'interest-only';
+  if(imp.structMap && Object.prototype.hasOwnProperty.call(imp.structMap, k)) return imp.structMap[k];
+  return guessStructure(text);
+}
+function impSetStruct(k, v){ imp.structMap = imp.structMap || {}; imp.structMap[k] = v; refreshView(); }
+function impMethod(text){
+  const s = String(text||'').toLowerCase();
+  if(!s) return 'Other';
+  if(/transfer|bank|trf|online|app/.test(s)) return 'Bank Transfer';
+  if(/cash/.test(s)) return 'Cash';
+  if(/pos/.test(s)) return 'POS';
+  if(/debit|standing/.test(s)) return 'Direct Debit';
+  return 'Other';
+}
+function nameKey(n){ return String(n||'').toLowerCase().replace(/\s+/g,' ').trim(); }
+
+/* ---------- checking every row ---------- */
+function buildImportPlan(){
+  const plan = {loans:[], payments:[], newBorrowers:0, counts:{}, structValues:new Map()};
+  const L = imp.loans, P = imp.payments;
+  const existingByKey = new Map(state.borrowers.map(b=>[nameKey(b.name), b]));
+  if(L && imp.sheets[L.sheet]){
+    const s = imp.sheets[L.sheet], m = L.map, seen = new Map();
+    for(let r = L.header+1; r < s.rows.length; r++){
+      const get = k => impCell(s, r, m[k]);
+      const name = impStr(get('name')).replace(/\s+/g,' ');
+      if(!name && impBlank(get('principal'))) continue;
+      if(/^(grand )?totals?$|^sum$|^balance$/i.test(name)) continue;
+      const e = {row: r + 1 + s.rowBase, name, errors:[], warnings:[], payments:[]};
+      if(!name) e.errors.push('no borrower name');
+      e.principal = impAmount(get('principal'));
+      if(!(e.principal > 0)) e.errors.push(impBlank(get('principal')) ? 'no amount' : `amount “${impStr(get('principal'))}” is not a number`);
+      else if(!Number.isInteger(e.principal)) e.principal = Math.round(e.principal);
+      const rt = impRate(get('rate'));
+      e.rate = rt.rate;
+      if(!(e.rate >= 0)) e.errors.push(impBlank(get('rate')) ? 'no interest rate (enter 0 for interest-free)' : `rate “${impStr(get('rate'))}” is not a number`);
+      else if(e.rate > 100) e.errors.push(`rate “${impStr(get('rate'))}” is too high for a monthly % — is that column the interest amount rather than the rate?`);
+      else{ if(rt.note) e.warnings.push(rt.note); if(e.rate > 15) e.warnings.push(`${e.rate}% a month is high — check it is the monthly rate`); }
+      const mo = impMonths(get('months'));
+      e.months = Math.round(mo);
+      if(!(mo >= 1 && mo <= 60) || Math.abs(mo - e.months) > 0.01) e.errors.push(impBlank(get('months')) ? 'no tenor (months)' : `tenor “${impStr(get('months'))}” should be 1 to 60 months`);
+      e.startDate = impDate(get('startDate'), imp.dayFirst, imp.date1904);
+      if(!e.startDate) e.errors.push(impBlank(get('startDate')) ? 'no date given' : `date “${impStr(get('startDate'))}” not understood`);
+      else if(e.startDate > TODAY) e.warnings.push('the date given is in the future');
+      const fp = get('firstPaymentDate');
+      e.firstPaymentDate = impBlank(fp) ? (e.startDate ? addMonths(e.startDate,1) : '') : impDate(fp, imp.dayFirst, imp.date1904);
+      if(!impBlank(fp) && !e.firstPaymentDate) e.errors.push(`first payment date “${impStr(fp)}” not understood`);
+      else if(e.firstPaymentDate && e.startDate && e.firstPaymentDate < e.startDate) e.errors.push('first payment is before the loan was given');
+      const rawSt = impStr(get('structure'));
+      e.structure = structureFor(rawSt);
+      if(m.structure >= 0){ const sk = structKey(rawSt); const v = plan.structValues.get(sk) || plan.structValues.set(sk, {raw:rawSt, count:0}).get(sk); v.count++; }
+      if(!e.structure) e.errors.push(`repayment type “${rawSt}” not recognised — choose what it means under Repayment types above`);
+      e.phone = impStr(get('phone')); e.purpose = impStr(get('purpose')); e.ref = impStr(get('ref'));
+      const paidCell = get('paid');
+      e.paid = impBlank(paidCell) ? 0 : impAmount(paidCell);
+      if(!(e.paid >= 0)){ e.warnings.push(`paid so far “${impStr(paidCell)}” is not a number — left out`); e.paid = 0; }
+      e.paid = Math.round(e.paid);
+      e.lastPaid = impDate(get('lastPaid'), imp.dayFirst, imp.date1904);
+      if(!e.errors.length){
+        e.terms = loanTerms(e.principal, e.rate, e.structure, e.months, e.firstPaymentDate);
+        const existing = existingByKey.get(nameKey(name));
+        e.borrowerId = existing ? existing.id : null;
+        const dup = existing && state.loans.find(l=>l.borrowerId===existing.id && money(l.principal)===e.principal && l.startDate===e.startDate);
+        if(dup) e.dup = dup.id;
+        const key = nameKey(name)+'|'+e.principal+'|'+e.startDate;
+        if(TEMPLATE_EXAMPLES.has(key)){ e.errors.push('this is an example row from the template — delete it from your spreadsheet'); e.dup = null; }
+        else if(seen.has(key)) e.warnings.push(`same borrower, amount and date as row ${seen.get(key)}`); else seen.set(key, e.row);
+        if(e.paid > e.terms.totalRepayable) e.warnings.push(`paid so far is more than the ${fmtNaira(e.terms.totalRepayable)} repayable — the extra shows as paid in advance`);
+      }
+      plan.loans.push(e);
+    }
+  }
+  if(P && P.sheet>=0 && imp.sheets[P.sheet]){
+    const s = imp.sheets[P.sheet], m = P.map;
+    const byRef = new Map(), byName = new Map();
+    plan.loans.forEach((e,i)=>{ if(e.errors.length) return; if(e.ref) byRef.set(e.ref.toLowerCase(), i); const k = nameKey(e.name); (byName.get(k) || byName.set(k, []).get(k)).push(i); });
+    for(let r = P.header+1; r < s.rows.length; r++){
+      const get = k => impCell(s, r, m[k]);
+      const name = impStr(get('name')).replace(/\s+/g,' '), ref = impStr(get('ref'));
+      if(!name && !ref && impBlank(get('amount'))) continue;
+      if(/^(grand )?totals?$|^sum$/i.test(name)) continue;
+      const e = {row: r + 1 + s.rowBase, name, ref, errors:[], warnings:[]};
+      e.amount = impAmount(get('amount'));
+      if(!(e.amount > 0)) e.errors.push(impBlank(get('amount')) ? 'no amount' : `amount “${impStr(get('amount'))}” is not a number`);
+      else e.amount = Math.round(e.amount);
+      e.date = impDate(get('date'), imp.dayFirst, imp.date1904);
+      if(!e.date) e.errors.push(impBlank(get('date')) ? 'no date' : `date “${impStr(get('date'))}” not understood`);
+      else if(e.date > TODAY) e.errors.push('the date is in the future');
+      e.method = impMethod(impStr(get('method'))); e.reference = impStr(get('reference')); e.note = impStr(get('note'));
+      if(TEMPLATE_EXAMPLES.has(nameKey(name)+'|'+e.date+'|'+e.amount)) e.errors.push('this is an example row from the template — delete it from your spreadsheet');
+      // which loan it belongs to
+      let target = null;
+      if(ref){
+        if(byRef.has(ref.toLowerCase())) target = {imp: byRef.get(ref.toLowerCase())};
+        else { const l = getLoan(ref.toUpperCase()); if(l) target = {loanId:l.id}; else e.errors.push(`no loan with reference “${ref}”`); }
+      } else if(name){
+        const cands = (byName.get(nameKey(name))||[]).map(i=>({imp:i, start:plan.loans[i].startDate}));
+        const b = existingByKey.get(nameKey(name));
+        if(b) state.loans.filter(l=>l.borrowerId===b.id && !cands.some(c=>plan.loans[c.imp].dup===l.id)).forEach(l=>cands.push({loanId:l.id, start:l.startDate}));
+        if(!cands.length) e.errors.push(b || plan.loans.some(x=>nameKey(x.name)===nameKey(name)) ? 'no usable loan for this borrower' : 'no loan for this borrower in the spreadsheet or the book');
+        else {
+          const before = cands.filter(c=>!e.date || c.start <= e.date).sort((a,c)=>a.start<c.start?1:-1);
+          target = before[0] || cands.sort((a,c)=>a.start<c.start?-1:1)[0];
+          if(cands.length > 1) e.warnings.push(`${name} has ${cands.length} loans — matched to the one given ${fmtDate(target.start)}`);
+          if(e.date && e.date < target.start) e.warnings.push(`dated before the loan was given (${fmtDate(target.start)}) — check the date`);
+        }
+      } else e.errors.push('no borrower name or loan reference');
+      // a loan already in the book: new payments for it still go in
+      if(target && target.imp!=null && plan.loans[target.imp].dup) target = {loanId:plan.loans[target.imp].dup, start:target.start};
+      if(target && !e.errors.length){
+        e.target = target;
+        const loanId = target.loanId || plan.loans[target.imp].dup;
+        if(loanId && getLoanPayments(loanId).some(p=>p.date===e.date && money(p.amount)===e.amount)) e.dup = loanId;
+        else if(target.imp!=null) plan.loans[target.imp].payments.push(e);
+      }
+      plan.payments.push(e);
+    }
+  }
+  // a total "paid so far" is left out when the loan's payments are listed one by one
+  plan.loans.forEach(e=>{
+    if(!(e.paid > 0) || e.errors.length) return;
+    if(e.payments.length){ e.warnings.push('paid so far left out — this loan’s payments are listed on the payments sheet'); e.paidIgnored = true; }
+    else if(!e.lastPaid) e.warnings.push('paid so far is recorded as received today — add a “Date of last payment” column for the real date');
+  });
+  const ok = plan.loans.filter(e=>!e.errors.length && !e.dup);
+  const newKeys = new Set(ok.filter(e=>!e.borrowerId).map(e=>nameKey(e.name)));
+  plan.counts = {
+    loans: ok.length,
+    borrowers: new Set(ok.map(e=>nameKey(e.name))).size,
+    newBorrowers: newKeys.size,
+    payments: plan.payments.filter(p=>!p.errors.length && !p.dup).length + ok.filter(e=>e.paid>0 && !e.paidIgnored).length,
+    skippedDup: plan.loans.filter(e=>e.dup).length + plan.payments.filter(p=>p.dup).length,
+    problems: plan.loans.filter(e=>e.errors.length).length + plan.payments.filter(p=>p.errors.length).length
+  };
+  return plan;
+}
+
+/* ---------- saving, and undoing ---------- */
+function runImport(plan, fileName){
+  const id = 'IMP-' + Date.now().toString(36).toUpperCase();
+  const borrowerIds = new Map(), loanIds = new Map();
+  const ok = plan.loans.map((e,i)=>({e,i})).filter(x=>!x.e.errors.length && !x.e.dup);
+  const firstDate = new Map();
+  ok.forEach(({e})=>{ const k = nameKey(e.name); if(!firstDate.has(k) || e.startDate < firstDate.get(k)) firstDate.set(k, e.startDate); });
+  let nLoans = 0, nPays = 0, nBorrowers = 0;
+  for(const {e,i} of ok){
+    const k = nameKey(e.name);
+    let bid = e.borrowerId || borrowerIds.get(k);
+    if(!bid){
+      const b = addBorrower({name:e.name, phone:e.phone, dateAdded:firstDate.get(k) < TODAY ? firstDate.get(k) : TODAY}, {silent:true});
+      b.importId = id; bid = b.id; borrowerIds.set(k, bid); nBorrowers++;
+    }
+    const loan = addLoan({borrowerId:bid, principal:e.principal, rate:e.rate, structure:e.structure, months:e.months,
+      startDate:e.startDate, firstPaymentDate:e.firstPaymentDate, purpose:e.purpose, createdDate:e.startDate}, {silent:true});
+    loan.importId = id; loanIds.set(i, loan.id); nLoans++;
+    if(e.paid > 0 && !e.paidIgnored){
+      let d = e.lastPaid || TODAY; if(d > TODAY) d = TODAY; if(d < e.startDate) d = e.startDate;
+      const p = addPayment({loanId:loan.id, borrowerId:bid, date:d, amount:e.paid, method:'Other', reference:'Imported', notes:'Total paid before LoanBook, from '+fileName,
+        timestamp:new Date(d+'T12:00:00').getTime()}, {silent:true});
+      p.importId = id; nPays++;
+    }
+  }
+  plan.payments.forEach((p, n)=>{
+    if(p.errors.length || p.dup) return;
+    const loanId = p.target.loanId || loanIds.get(p.target.imp);
+    if(!loanId) return;
+    const loan = getLoan(loanId);
+    const pay = addPayment({loanId, borrowerId:loan.borrowerId, date:p.date, amount:p.amount, method:p.method, reference:p.reference, notes:p.note,
+      timestamp:new Date(p.date+'T12:00:00').getTime() + n}, {silent:true});
+    pay.importId = id; nPays++;
+  });
+  logAudit('Spreadsheet imported','Data', id, `${fileName}: ${plural(nLoans,'loan')}, ${plural(nPays,'payment')}, ${plural(nBorrowers,'new borrower')}`);
+  save();
+  return {id, loans:nLoans, payments:nPays, borrowers:nBorrowers};
+}
+function importContents(id){
+  const loans = state.loans.filter(l=>l.importId===id), loanIds = new Set(loans.map(l=>l.id));
+  const payments = state.payments.filter(p=>p.importId===id || loanIds.has(p.loanId));
+  const later = payments.filter(p=>p.importId!==id).length;
+  const borrowers = state.borrowers.filter(b=>b.importId===id && !state.loans.some(l=>l.borrowerId===b.id && l.importId!==id));
+  return {loans, payments, later, borrowers, notes: state.notes.filter(n=>n.loanId && loanIds.has(n.loanId))};
+}
+function undoImport(id){
+  const c = importContents(id);
+  removeRecords('notes', c.notes); removeRecords('payments', c.payments); removeRecords('loans', c.loans);
+  removeRecords('notes', state.notes.filter(n=>c.borrowers.some(b=>b.id===n.borrowerId)));
+  removeRecords('borrowers', c.borrowers);
+  logAudit('Spreadsheet import undone','Data', id, `Removed ${plural(c.loans.length,'loan')}, ${plural(c.payments.length,'payment')} and ${plural(c.borrowers.length,'borrower')}`);
+  save();
+  return c;
+}
+function confirmUndoImport(id){
+  const c = importContents(id);
+  confirmAction({title:'Undo this import?', confirmLabel:'Undo import', danger:true,
+    body:`<p style="font-size:13.5px;">This removes the <b>${plural(c.loans.length,'loan')}</b>, <b>${plural(c.payments.length,'payment')}</b> and <b>${plural(c.borrowers.length,'borrower')}</b> this import added.</p>
+      ${c.later ? `<p style="font-size:13.5px;"><b>${plural(c.later,'payment')}</b> recorded since then on those loans will be removed too.</p>` : ''}
+      <p style="font-size:13.5px;">Everything else in the book stays as it is, and the undo is written to the activity log.</p>`,
+    onConfirm:()=>{ undoImport(id); imp = null; toast('Import undone'); navigate('#/import'); refreshView(); }});
+}
+
+/* ---------- the import page ---------- */
+async function impChooseFile(input){
+  const file = input.files && input.files[0];
+  input.value = '';
+  if(!file) return;
+  imp = {step:'reading', fileName:file.name};
+  refreshView();
+  try{
+    const book = await readSpreadsheet(file);
+    imp = {step:'map', fileName:book.name, sheets:book.sheets, date1904:book.date1904, dayFirst:true};
+    guessSheets();
+  }catch(e){ console.error(e); imp = {step:'choose', error:e.message}; }
+  refreshView();
+}
+function impSetSheet(kind, idx){ idx = Number(idx); if(kind==='payments' && idx<0) imp.payments = {sheet:-1, header:0, map:{}}; else setupSheet(kind, idx); refreshView(); }
+function impSetHeader(kind, row){ const k = imp[kind]; k.header = Number(row); k.map = autoMap(imp.sheets[k.sheet].text[k.header]||[], IMPORT_FIELDS[kind]); refreshView(); }
+function impSetMap(kind, field, col){ imp[kind].map[field] = Number(col); refreshView(); }
+function impMissing(kind){
+  const k = imp[kind]; if(!k || k.sheet<0) return [];
+  const miss = IMPORT_FIELDS[kind].filter(f=>f.req && !(k.map[f.k]>=0)).map(f=>f.label);
+  if(kind==='payments' && !(k.map.name>=0) && !(k.map.ref>=0)) miss.push('Borrower name or Loan reference');
+  return miss;
+}
+function impCheck(){
+  const miss = [...impMissing('loans'), ...impMissing('payments').map(x=>'Payments: '+x)];
+  if(miss.length){ toast('Choose a column for: ' + miss.join(', '), 'error'); return; }
+  imp.step = 'preview'; refreshView(); window.scrollTo(0,0);
+}
+function impDoImport(){
+  const plan = buildImportPlan();
+  if(!plan.counts.loans && !plan.counts.payments){ toast('There is nothing new to import from this file.','error'); return; }
+  confirmAction({title:'Import into the book?', confirmLabel:'Import',
+    body:`<p style="font-size:13.5px;">This adds <b>${plural(plan.counts.loans,'loan')}</b> and <b>${plural(plan.counts.payments,'payment')}</b> to the book${plan.counts.newBorrowers?`, with <b>${plural(plan.counts.newBorrowers,'new borrower')}</b>`:''}, and saves them to your Google Drive.</p>
+      ${plan.counts.problems ? `<p style="font-size:13.5px;">${plural(plan.counts.problems,'row')} with problems will be left out.</p>` : ''}
+      <p style="font-size:13.5px;">You can undo the whole import afterwards if anything looks wrong.</p>`,
+    onConfirm:()=>{ const res = runImport(buildImportPlan(), imp.fileName); imp = {step:'done', result:res, fileName:imp.fileName}; refreshView(); window.scrollTo(0,0); }});
+}
+async function downloadImportTemplate(btn){
+  if(btn){ btn.disabled = true; btn.textContent = 'Preparing…'; }
+  try{
+    const X = await loadSheetJS();
+    const serial = iso => { const [y,m,d] = iso.split('-').map(Number); return (Date.UTC(y,m-1,d) - Date.UTC(1899,11,30))/86400000; };
+    const sheet = (rows, dateCols, widths) => {
+      const ws = X.utils.aoa_to_sheet(rows);
+      rows.forEach((r, ri)=>{ if(!ri) return; dateCols.forEach(c=>{ const v = r[c]; if(typeof v==='string' && isISODate(v)) ws[X.utils.encode_cell({r:ri, c})] = {t:'n', v:serial(v), z:'dd/mm/yyyy'}; }); });
+      ws['!cols'] = widths.map(w=>({wch:w}));
+      return ws;
+    };
+    const wb = X.utils.book_new();
+    X.utils.book_append_sheet(wb, sheet([
+      ['Borrower name','Phone','Amount given','Monthly rate %','Months','Date given','First payment date','Repayment type','Paid so far','Date of last payment','Purpose or notes'],
+      ['Chioma Okeke','0803 456 7890',500000,5,3,'2026-06-15','2026-07-15',TEMPLATE_TYPES[0],50000,'2026-08-15','Restock fabric'],
+      ['Ibrahim Musa','0812 345 6789',300000,5,3,'2026-05-28','',TEMPLATE_TYPES[2],'','','Shop expansion'],
+      ['Bisi Adeyemi','',150000,0,2,'2026-07-30','',TEMPLATE_TYPES[0],'','','Family — no interest']
+    ], [5,6,9], [22,16,14,14,9,13,17,30,13,19,26]), 'Loans');
+    X.utils.book_append_sheet(wb, sheet([
+      ['Borrower name','Date received','Amount','Method','Reference','Note'],
+      ['Ibrahim Musa','2026-06-28',115000,'Cash','CSH-221',''],
+      ['Ibrahim Musa','2026-07-30',70000,'Cash','CSH-238','Part payment']
+    ], [1], [22,15,12,15,14,24]), 'Payments');
+    X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet([
+      ['How to fill this in'], [''],
+      ['Loans sheet: one row per loan. Borrower name, Amount given, Monthly rate %, Months and Date given are needed; the rest is optional.'],
+      ['Monthly rate: the rate per month, e.g. 5 for 5%. Use 0 for an interest-free loan.'],
+      ['Dates: day first, e.g. 15/06/2026.'],
+      ['Repayment type: click the cell and choose from the drop-down list. "' + TEMPLATE_TYPES[0] + '" is the usual. Blank means the same.'],
+      ['First payment date: leave blank for one month after the date given.'],
+      ['Paid so far: the total already repaid on that loan, if you do not list payments one by one.'],
+      ['Payments sheet (optional): one row per payment received, if you have them. Leave "Paid so far" blank for those loans.'],
+      ['The same person can have several loans: write their name the same way each time.'],
+      ['Delete the example rows before importing.']
+    ]), 'How to fill this in');
+    const out = addListValidation(X, X.write(wb, {type:'array', bookType:'xlsx'}), 1, 'H2:H1000', TEMPLATE_TYPES, 'Repayment type');
+    triggerDownload(new Blob([out], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), 'LoanBook import template.xlsx');
+  }catch(e){ toast(e.message, 'error'); }
+  if(btn){ btn.disabled = false; btn.innerHTML = icon('download') + ' Download the template'; }
+}
+/* SheetJS's free edition cannot write drop-down lists, so the template's
+   Repayment type column gets one by adding Excel's own list check to the
+   sheet inside the finished file. Excel and Google Sheets both show it as a
+   drop-down. If anything goes wrong the template still downloads, without. */
+function addListValidation(X, out, sheetNo, sqref, items, title){
+  try{
+    const cfb = X.CFB.read(new Uint8Array(out), {type:'array'});
+    const i = cfb.FullPaths.indexOf(`Root Entry/xl/worksheets/sheet${sheetNo}.xml`);
+    if(i < 0) return out;
+    const xml = new TextDecoder().decode(cfb.FileIndex[i].content);
+    if(!xml.includes('</sheetData>') || xml.includes('<dataValidations')) return out;
+    const attr = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+    const dv = `<dataValidations count="1"><dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1" errorStyle="stop"`
+      + ` errorTitle="${attr(title)}" error="Please choose one of the types in the list." promptTitle="${attr(title)}" prompt="Choose from the list." sqref="${sqref}">`
+      + `<formula1>"${attr(items.join(','))}"</formula1></dataValidation></dataValidations>`;
+    // Excel requires it straight after the cell data (no merged cells or filters here)
+    cfb.FileIndex[i].content = new TextEncoder().encode(xml.replace('</sheetData>', '</sheetData>' + dv));
+    return X.CFB.write(cfb, {fileType:'zip', type:'array'});
+  }catch(e){ console.warn('Drop-down list not added to the template', e); return out; }
+}
+/* Each repayment type written in the file, with what LoanBook takes it to
+   mean, so a slip in the spreadsheet is caught and set right here. */
+function structureChoices(plan){
+  const opts = (sel, withChoose) => (withChoose ? `<option value="" ${!sel?'selected':''}>— choose —</option>` : '') +
+    Object.keys(STRUCTURES).map(k=>`<option value="${k}" ${sel===k?'selected':''}>${STRUCTURES[k].label}</option>`).join('');
+  const noColumn = !(imp.loans.map.structure >= 0);
+  const blanks = plan.structValues.has('') ? plan.structValues.get('').count : 0;
+  const rows = [...plan.structValues.entries()].filter(([k])=>k).sort((a,b)=>b[1].count-a[1].count).map(([k, v])=>{
+    const sel = structureFor(v.raw), chosen = imp.structMap && Object.prototype.hasOwnProperty.call(imp.structMap, k);
+    return `<div class="ml">“${esc(v.raw)}” <span class="shint" style="font-weight:500;">· ${plural(v.count,'loan')}</span></div>
+      <div><select class="select" onchange="impSetStruct(${jsArg(k)}, this.value)">${opts(sel, true)}</select>
+      ${!sel ? `<div class="map-sample" style="color:var(--red);font-weight:600;">Not recognised — choose what this means</div>` : chosen ? '' : `<div class="map-sample">Matched automatically — change it if it’s wrong</div>`}</div>`;
+  }).join('');
+  const fallback = noColumn || blanks ? `<div class="ml">${noColumn ? 'All loans <span class="shint" style="font-weight:500;">· the spreadsheet has no repayment type column</span>' : `Left blank <span class="shint" style="font-weight:500;">· ${plural(blanks,'loan')}</span>`}</div>
+      <div><select class="select" onchange="imp.structDefault=this.value; refreshView();">${opts(imp.structDefault || 'interest-only', false)}</select></div>` : '';
+  const held = plan.loans.filter(e=>!e.structure).length;
+  return `<div class="section">
+    <div class="section-head"><h3>Repayment types</h3><span class="shint">This sets each loan’s schedule, so check it</span></div>
+    ${held ? `<div class="callout danger" style="margin-bottom:14px;">${plural(held,'loan')} ${held===1?'is':'are'} held back until you choose what ${held===1?'its':'their'} repayment type means below.</div>` : ''}
+    <div class="map-grid">${rows}${fallback}</div>
+  </div>`;
+}
+function importSteps(on){
+  const steps = [['choose','Choose file'],['map','Match columns'],['preview','Check'],['done','Done']];
+  const at = steps.findIndex(s=>s[0]===on);
+  return `<div class="imp-steps">${steps.map((s,i)=>`<span class="${i===at?'on':i<at?'done':''}">${i+1}. ${s[1]}</span>`).join('')}</div>`;
+}
+function pageImport(){
+  const head = (sub)=>`<div class="page-head"><div><h1>Import from a spreadsheet</h1><p class="page-sub">${sub}</p></div><div class="head-actions">${imp && imp.step!=='choose' && imp.step!=='done' ? `<button class="btn" onclick="imp=null; refreshView();">Start again</button>` : ''}</div></div>`;
+  if(!imp || imp.step==='choose' || imp.step==='reading'){
+    const recent = state.audit.filter(a=>a.action==='Spreadsheet imported').map(a=>({a, c:importContents(a.entityId)})).filter(x=>x.c.loans.length || x.c.payments.length).slice(0,5);
+    return head('Bring the loans you already keep in Excel or Google Sheets into LoanBook, instead of typing them in one by one.') + importSteps('choose') + `
+    ${imp && imp.error ? `<div class="callout danger" style="margin-bottom:16px;">${esc(imp.error)}</div>` : ''}
+    <div class="section">
+      <div class="imp-drop">
+        ${imp && imp.step==='reading' ? `<div class="spinner"></div><p style="margin:0;">Reading ${esc(imp.fileName)}…</p>` : `
+        <button class="btn btn-primary" onclick="$('impFile').click()">${icon('upload')} Choose a spreadsheet file</button>
+        <input type="file" id="impFile" accept=".xlsx,.xls,.xlsm,.ods,.csv,text/csv" style="display:none;" onchange="impChooseFile(this)">
+        <p class="shint" style="margin:12px 0 0;">Excel (.xlsx or .xls) or CSV. From Google Sheets: File → Download → Microsoft Excel.</p>`}
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-head"><h3>What LoanBook looks for</h3><button class="btn btn-sm" onclick="downloadImportTemplate(this)">${icon('download')} Download the template</button></div>
+      <p style="font-size:13px;margin:0 0 12px;">One row per loan. The columns can be in any order and the headings don’t have to match exactly — you can say which column is which on the next step.</p>
+      <div class="table-wrap"><table><thead><tr><th>Column</th><th>Needed?</th><th>Example</th></tr></thead><tbody>
+        ${[['Borrower name','Yes','Amaka Osu'],['Amount given','Yes','500,000'],['Monthly rate %','Yes','5 (0 for interest-free)'],['Months','Yes','3'],['Date given','Yes','15/06/2026'],
+           ['First payment date','No','15/07/2026 — if blank, a month after the date given'],['Repayment type','No','Interest only · Equal instalments · Reducing balance — spelling slips are fine; you confirm each type before importing'],
+           ['Paid so far','No','50,000 — the total repaid already'],['Date of last payment','No','15/08/2026'],['Phone','No','0803 456 7890'],['Purpose or notes','No','Restock inventory']]
+          .map(r=>`<tr><td class="cell-primary">${r[0]}</td><td>${r[1]}</td><td class="cell-sub" style="white-space:normal;">${r[2]}</td></tr>`).join('')}
+      </tbody></table></div>
+      <p class="shint" style="margin:12px 0 0;">Have the payments one by one? Put them on a second sheet with Borrower name, Date received and Amount. The same person can have several loans — write their name the same way each time.</p>
+    </div>
+    ${recent.length ? `<div class="section"><div class="section-head"><h3>Recent imports</h3></div>
+      ${recent.map(x=>`<div class="set-row"><div><div class="set-label">${esc(x.a.detail)}</div><div class="set-desc">${fmtDateTime(x.a.timestamp)}</div></div><button class="btn btn-danger btn-sm" onclick="confirmUndoImport(${jsArg(x.a.entityId)})">Undo this import</button></div>`).join('')}</div>` : ''}`;
+  }
+  if(imp.step==='map'){
+    const sheetOpts = (sel, withNone) => (withNone ? `<option value="-1" ${sel<0?'selected':''}>No payments sheet</option>` : '') + imp.sheets.map((s,i)=>`<option value="${i}" ${i===sel?'selected':''}>${esc(s.name)} (${plural(Math.max(0,s.rows.length-1),'row')})</option>`).join('');
+    const block = kind => {
+      const k = imp[kind]; if(!k || k.sheet<0) return '';
+      const s = imp.sheets[k.sheet], headers = s.text[k.header]||[];
+      const ncols = Math.max(...s.rows.slice(0, 50).map(r=>r.length), headers.length);
+      const sample = c => { for(let r=k.header+1; r<Math.min(s.rows.length, k.header+12); r++){ const v = impStr(impCell(s,r,c)); if(v) return v; } return ''; };
+      const colOpts = sel => `<option value="-1" ${!(sel>=0)?'selected':''}>— not in my spreadsheet —</option>` +
+        Array.from({length:ncols}, (_,c)=>`<option value="${c}" ${sel===c?'selected':''}>${colName(c + s.colBase)}: ${esc(String(headers[c]||'').trim() || '(no heading)')}</option>`).join('');
+      return `<div class="section">
+        <div class="section-head"><h3>${kind==='loans'?'Loans':'Payments'}</h3>
+          <span class="shint">Headings on row <select class="select" style="padding:4px 24px 4px 8px;" onchange="impSetHeader('${kind}', this.value)">${Array.from({length:Math.min(15, s.rows.length)}, (_,r)=>`<option value="${r}" ${r===k.header?'selected':''}>${r+1+s.rowBase}</option>`).join('')}</select></span></div>
+        <div class="map-grid">
+          ${IMPORT_FIELDS[kind].map(f=>{ const sel = k.map[f.k]; const ex = sel>=0 ? sample(sel) : '';
+            return `<div class="ml">${f.label}${f.req?' <span class="req">*</span>':''}</div>
+              <div><select class="select" onchange="impSetMap('${kind}','${f.k}', this.value)">${colOpts(sel)}</select>${ex?`<div class="map-sample">e.g. ${esc(ex.slice(0,60))}</div>`:''}</div>`; }).join('')}
+        </div>
+      </div>`;
+    };
+    const missL = impMissing('loans'), missP = impMissing('payments');
+    return head(`${esc(imp.fileName)} — tell LoanBook which column holds what. Most are matched already; check them and change any that are wrong.`) + importSteps('map') + `
+      <div class="section">
+        <div class="form-grid">
+          <div class="form-field"><label>Loans are on</label><select class="select" onchange="impSetSheet('loans', this.value)">${sheetOpts(imp.loans.sheet, false)}</select></div>
+          <div class="form-field"><label>Payments listed one by one are on</label><select class="select" onchange="impSetSheet('payments', this.value)">${sheetOpts(imp.payments.sheet, true)}</select></div>
+          <div class="form-field full"><label class="check" style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500;color:var(--ink);"><input type="checkbox" ${imp.dayFirst?'checked':''} onchange="imp.dayFirst=this.checked; refreshView();"> Dates are written day first, like 15/06/2026 (untick for 06/15/2026)</label></div>
+        </div>
+      </div>
+      ${block('loans')}${block('payments')}
+      ${missL.length || missP.length ? `<div class="callout" style="margin-bottom:14px;">Still to match: ${esc([...missL, ...missP.map(x=>'payments '+x.toLowerCase())].join(', '))}.</div>` : ''}
+      <div class="set-actions"><button class="btn" onclick="imp={step:'choose'}; refreshView();">Back</button><button class="btn btn-primary" onclick="impCheck()">Check the loans →</button></div>`;
+  }
+  if(imp.step==='preview'){
+    const plan = buildImportPlan(), c = plan.counts;
+    const waiting = !sync.remoteKnown;
+    const f = imp.filter || 'all';
+    const show = e => f==='all' || (f==='problems' && e.errors.length) || (f==='warnings' && (e.warnings.length || e.dup));
+    const note = e => e.errors.length ? `<span class="e">✕ Left out: ${esc(e.errors.join('; '))}</span>`
+      : e.dup ? `<span class="dupnote">Already in the book (${esc(e.dup)}) — skipped</span>`
+      : (e.warnings.length ? `<span class="w">⚠ ${esc(e.warnings.join('; '))}</span>` : `<span class="ok">✓ Ready</span>`);
+    const loanRows = plan.loans.filter(show);
+    const payRows = plan.payments.filter(show);
+    const owedAfter = e => { if(e.errors.length || e.dup) return '—'; const paid = e.paidIgnored ? e.payments.filter(p=>!p.errors.length).reduce((s,p)=>s+p.amount,0) : e.paid + e.payments.filter(p=>!p.errors.length && !p.dup).reduce((s,p)=>s+p.amount,0); return fmtNaira(Math.max(0, e.terms.totalRepayable - paid)); };
+    return head(`${esc(imp.fileName)} — check everything below. Nothing is saved until you press Import.`) + importSteps('preview') + `
+      <div class="imp-sum">
+        <div><span>Loans to add</span><b>${c.loans}</b><small>for ${plural(c.borrowers,'borrower')}${c.newBorrowers?`, ${c.newBorrowers} new`:''}</small></div>
+        <div><span>Payments to add</span><b>${c.payments}</b><small>&nbsp;</small></div>
+        <div><span>Already in the book</span><b>${c.skippedDup}</b><small>skipped</small></div>
+        <div><span>Rows with problems</span><b style="${c.problems?'color:var(--red);':''}">${c.problems}</b><small>left out</small></div>
+      </div>
+      ${c.problems ? `<div class="callout" style="margin-bottom:14px;">Rows with problems are left out. You can import the rest now, fix those rows in your spreadsheet, and import the same file again later — loans already imported are skipped automatically.</div>` : ''}
+      ${waiting ? `<div class="callout info" style="margin-bottom:14px;">${navigator.onLine===false ? 'You are offline. Connect to the internet first, so LoanBook can check your Google Drive book and skip loans already in it.' : 'LoanBook is still checking your Google Drive book, so it can skip loans that are already there.'} <button class="btn btn-sm" onclick="retrySync()">Check now</button></div>` : ''}
+      ${plan.loans.length ? structureChoices(plan) : ''}
+      <div class="pill-group" style="margin-bottom:12px;">${[['all','All rows'],['problems','Problems only'],['warnings','Notes and skipped']].map(p=>`<button class="filter-pill ${f===p[0]?'active':''}" onclick="imp.filter='${p[0]}'; refreshView();">${p[1]}</button>`).join('')}</div>
+      <div class="section">
+        <div class="section-head"><h3>Loans</h3><span class="shint">${plural(plan.loans.length,'row')} read</span></div>
+        ${loanRows.length ? `<div class="table-wrap"><table><thead><tr><th>Row</th><th>Borrower</th><th class="num">Amount</th><th>Terms</th><th>Given</th><th class="num">Repayable</th><th class="num">Still owed</th></tr></thead><tbody>
+          ${loanRows.map(e=>`<tr class="${e.errors.length?'imp-err':e.dup?'imp-dup':''}"><td class="mono">${e.row}</td><td class="imp-who"><div class="cell-primary">${esc(e.name||'—')}</div><div class="cell-sub">${e.errors.length?'':(e.borrowerId?`existing · ${esc(e.borrowerId)}`:'new borrower')}</div><div class="imp-note">${note(e)}</div></td>
+            <td class="num mono">${e.principal>0?fmtNaira(e.principal):'—'}</td>
+            <td class="cell-sub">${e.errors.length?'':`${e.rate}%/mo · ${plural(e.months,'month')} · ${STRUCTURES[e.structure].short}`}</td>
+            <td>${fmtDate(e.startDate)}</td>
+            <td class="num mono">${e.terms?fmtNaira(e.terms.totalRepayable):'—'}</td>
+            <td class="num mono">${owedAfter(e)}</td></tr>`).join('')}
+        </tbody></table></div>` : `<p class="shint">${plan.loans.length ? 'No rows to show with this filter.' : 'No loan rows were found under the headings. Check the sheet and the headings row on the previous step.'}</p>`}
+      </div>
+      ${imp.payments.sheet>=0 ? `<div class="section">
+        <div class="section-head"><h3>Payments</h3><span class="shint">${plural(plan.payments.length,'row')} read</span></div>
+        ${payRows.length ? `<div class="table-wrap"><table><thead><tr><th>Row</th><th>Borrower</th><th>Date</th><th class="num">Amount</th><th>Goes to</th></tr></thead><tbody>
+          ${payRows.map(p=>{ const to = p.target ? (p.target.loanId ? p.target.loanId : `new loan from row ${plan.loans[p.target.imp].row}`) : '—';
+            return `<tr class="${p.errors.length?'imp-err':p.dup?'imp-dup':''}"><td class="mono">${p.row}</td><td class="imp-who"><div class="cell-primary">${esc(p.name||p.ref||'—')}</div><div class="imp-note">${note(p)}</div></td><td>${fmtDate(p.date)}</td><td class="num mono">${p.amount>0?fmtNaira(p.amount):'—'}</td><td class="cell-sub">${esc(to)}</td></tr>`; }).join('')}
+        </tbody></table></div>` : `<p class="shint">${plan.payments.length ? 'No rows to show with this filter.' : 'No payment rows were found.'}</p>`}
+      </div>` : ''}
+      <div class="set-actions"><button class="btn" onclick="imp.step='map'; refreshView();">Back</button>
+        <button class="btn btn-primary" ${waiting || (!c.loans && !c.payments) ? 'disabled' : ''} onclick="impDoImport()">${!c.loans && !c.payments ? 'Nothing new to import' : 'Import ' + [c.loans ? plural(c.loans,'loan') : '', c.payments ? plural(c.payments,'payment') : ''].filter(Boolean).join(' and ')}</button></div>`;
+  }
+  if(imp.step==='done'){
+    const r = imp.result;
+    return head('Your loans are in the book and saving to Google Drive.') + importSteps('done') + `
+      <div class="section">
+        <p style="font-size:14px;margin-top:0;">Added <b>${plural(r.loans,'loan')}</b>, <b>${plural(r.payments,'payment')}</b> and <b>${plural(r.borrowers,'new borrower')}</b> from ${esc(imp.fileName)}.</p>
+        <p class="shint">Look through the loans now. If anything is wrong, you can undo the whole import, fix the spreadsheet and import it again.</p>
+        <div class="set-actions" style="margin-top:14px;">
+          <button class="btn btn-primary" onclick="imp=null; navigate('#/dashboard')">Go to the dashboard</button>
+          <button class="btn" onclick="imp=null; navigate('#/loans')">See the loans</button>
+          <button class="btn btn-danger" onclick="confirmUndoImport(${jsArg(r.id)})">Undo this import</button>
+        </div>
+      </div>`;
+  }
+  return '';
+}
+
 /* =========================== SETTINGS =========================== */
 function pageSettings(){
   const dirty = !!meta.dirty;
@@ -2183,6 +2930,10 @@ function pageSettings(){
       <div><div class="set-label">Restore from a backup file</div><div class="set-desc">Loads a backup file back in. This replaces the whole book, here and in Drive. The book as it is now is downloaded first, just in case.</div></div>
       <button class="btn" onclick="$('restoreFile').click()">${icon('upload')} Restore</button>
       <input type="file" id="restoreFile" accept="application/json,.json" style="display:none;" onchange="importBackup(this)">
+    </div>
+    <div class="set-row">
+      <div><div class="set-label">Import from a spreadsheet</div><div class="set-desc">Brings in loans you already keep in Excel or Google Sheets. Adds to the book — nothing already in it is changed — and can be undone.</div></div>
+      <button class="btn" onclick="navigate('#/import')">${icon('upload')} Import</button>
     </div>
   </div>
 
