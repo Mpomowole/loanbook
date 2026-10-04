@@ -106,16 +106,6 @@ nav.mainnav{padding:12px 10px;display:flex;flex-direction:column;gap:2px;flex:1;
 .signout{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;margin-top:12px;padding:9px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.06);color:#fff;font-size:13px;font-weight:600;cursor:pointer;font-family:var(--font-body);}
 .signout svg{width:16px;height:16px;stroke:currentColor;flex:none;}
 .signout:hover{background:rgba(255,255,255,0.12);}
-.account-btn{display:none;width:36px;height:36px;border-radius:50%;border:none;padding:0;background:var(--gold);color:#241b06;font-weight:700;font-size:12px;cursor:pointer;flex:none;font-family:var(--font-body);}
-.account-panel{width:270px;}
-.acct-head{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--border);}
-.acct-name{font-size:13.5px;font-weight:600;color:var(--ink);}
-.acct-email{font-size:12px;color:var(--ink-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.acct-item{display:flex;align-items:center;gap:10px;width:100%;padding:13px 16px;border:none;border-bottom:1px solid var(--border);background:none;color:var(--ink);font-size:14px;font-weight:500;cursor:pointer;text-align:left;font-family:var(--font-body);}
-.acct-item:last-child{border-bottom:none;}
-.acct-item:hover{background:var(--surface-2);}
-.acct-item svg{width:17px;height:17px;stroke:currentColor;flex:none;}
-.acct-item.danger{color:var(--red);font-weight:600;}
 
 #main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg);}
 #topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:14px;padding:12px 26px;background:color-mix(in srgb, var(--bg) 85%, transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--border);}
@@ -401,7 +391,6 @@ tr.imp-dup td{color:var(--ink-faint);}
 }
 @media(max-width:900px){
   #sidebar{position:fixed;left:-230px;top:0;bottom:0;height:auto;z-index:110;transition:left 0.2s;}   /* the visible screen, not behind the browser's bar */
-  .account-btn{display:flex;align-items:center;justify-content:center;}
   #sidebar.open{left:0;}
   #sidebarBackdrop.open{display:block;position:fixed;inset:0;background:rgba(8,13,25,0.5);z-index:105;}
   .menu-toggle{display:flex;}
@@ -425,7 +414,6 @@ tr.imp-dup td{color:var(--ink-faint);}
   .modal-box{max-width:none;min-height:100%;border-radius:0;border:none;}
   .modal-body{max-height:none;}
   .notif-panel{right:10px;left:10px;width:auto;top:54px;}
-  .notif-panel.account-panel{left:auto;width:270px;max-width:calc(100vw - 20px);}
   .statement-figs{grid-template-columns:1fr 1fr;}
   .letter{padding:22px 18px;}
   .letter-terms .lt-k{width:130px;}
@@ -487,7 +475,6 @@ tr.imp-dup td{color:var(--ink-faint);}
           <span class="notif-dot" id="notifDot" style="display:none;"></span>
         </button>
         <button class="btn btn-primary btn-sm" onclick="openRecordPaymentModal()" aria-label="Record payment"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>Record Payment</span></button>
-        <button class="account-btn" id="accountBtn" onclick="toggleAccountPanel(event)" aria-label="Account and sign out" title="Account and sign out">A</button>
       </div>
       <div id="notifPanelRoot"></div>
     </header>
@@ -3808,7 +3795,7 @@ function onGlobalSearch(q){
 function toggleNotifPanel(e){
   e.stopPropagation();
   const root = $('notifPanelRoot');
-  if(root.innerHTML && !root.querySelector('.account-panel')){ root.innerHTML=''; return; }
+  if(root.innerHTML){ root.innerHTML=''; return; }
   const items = buildAlerts().slice(0,12);
   root.innerHTML = `<div class="notif-panel" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">
     <div class="notif-panel-head">Alerts</div>
@@ -3821,18 +3808,6 @@ function updateNotifDot(){
   if(dot) dot.style.display = n ? 'block' : 'none';
 }
 document.addEventListener('click', e=>{ if(!e.target.closest || !e.target.closest('.search-wrap')) closePanels(); });
-/* On a phone the sidebar is tucked away, so the account button in the top
-   bar keeps Sign out one tap away. */
-function toggleAccountPanel(e){
-  e.stopPropagation();
-  const root = $('notifPanelRoot');
-  if(root.querySelector('.account-panel')){ root.innerHTML=''; return; }
-  root.innerHTML = `<div class="notif-panel account-panel" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">
-    <div class="acct-head"><div class="user-avatar">${esc(initials(auth.username||'U'))}</div><div style="min-width:0;"><div class="acct-name">${esc(auth.username||'')}</div><div class="acct-email">${esc(auth.email||'')}</div></div></div>
-    <button class="acct-item" onclick="closePanels(); navigate('#/settings')">${icon('settings')}Settings</button>
-    <button class="acct-item danger" onclick="closePanels(); signOut()"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>Sign out</button>
-  </div>`;
-}
 function closePanels(){
   const p=$('notifPanelRoot'); if(p) p.innerHTML='';
   const s=$('searchResults'); if(s){ s.innerHTML=''; s.className=''; }
@@ -4020,7 +3995,6 @@ function startApp(){
   $('userName').textContent = auth.username||'—';
   $('userName').title = auth.email;
   $('userEmail').textContent = auth.email||'';
-  $('accountBtn').textContent = initials(auth.username||'U');
   if(window.matchMedia && matchMedia('(max-width:480px)').matches) $('globalSearch').placeholder = 'Search…';   // the long hint is cut off on a phone
   route = location.hash || '#/dashboard';
   render();
