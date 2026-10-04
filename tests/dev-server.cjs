@@ -11,6 +11,8 @@ const INDEX = process.env.INDEX || path.join(ROOT, 'index.html');
 const TYPES = {'.html':'text/html; charset=utf-8', '.svg':'image/svg+xml', '.png':'image/png', '.webmanifest':'application/manifest+json', '.js':'application/javascript; charset=utf-8'};
 const drive = createDrive();
 let lastReminder = null;   // what the app last sent the (stand-in) reminder service
+// The stand-in answers as the current reminder-service/Code.gs would, version included.
+const SERVICE_VERSION = Number((/const VERSION = (\d+);/.exec(fs.readFileSync(path.join(ROOT, 'reminder-service', 'Code.gs'), 'utf8')) || [])[1]) || 0;
 
 const FAKE_GIS = `
 window.google = {accounts:{oauth2:{
@@ -54,7 +56,7 @@ http.createServer((req, res)=>{
     if(u.pathname==='/__ctl/offline'){ drive.fail.offline = Number(u.searchParams.get('n')||1); return send(200,'ok'); }
     if(u.pathname==='/__ctl/files') return send(200, JSON.stringify([...drive.files.values()].map(f=>({id:f.id,name:f.name,owner:f.owner,trashed:f.trashed,parents:f.parents,bytes:(f.content||'').length,modified:f.modifiedTime})), null, 1), 'application/json');
     if(u.pathname==='/__ctl/book') return send(200, JSON.stringify(drive.book(u.searchParams.get('email')||'ade.martins@example.com')), 'application/json');
-    if(u.pathname==='/__reminders' && req.method==='POST'){ try{ lastReminder = JSON.parse(body); }catch(e){ return send(200, JSON.stringify({ok:false, error:'bad-request'}), 'application/json'); } return send(200, JSON.stringify({ok:true, enabled:!!(lastReminder.settings&&lastReminder.settings.enabled)}), 'application/json'); }
+    if(u.pathname==='/__reminders' && req.method==='POST'){ try{ lastReminder = JSON.parse(body); }catch(e){ return send(200, JSON.stringify({ok:false, error:'bad-request'}), 'application/json'); } return send(200, JSON.stringify({ok:true, enabled:!!(lastReminder.settings&&lastReminder.settings.enabled), version:SERVICE_VERSION}), 'application/json'); }
     if(u.pathname==='/__ctl/reminders') return send(200, JSON.stringify(lastReminder), 'application/json');
     if(u.pathname==='/__ctl/log') return send(200, drive.log.slice(-60).join('\n'));
     if(u.pathname.startsWith('/gapi/')){

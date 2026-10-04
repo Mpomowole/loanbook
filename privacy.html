@@ -40,7 +40,7 @@ a{color:var(--accent);}
   <div class="card">
     <a class="brand" href="./"><img src="icons/logo.svg" alt=""><b>Loan<span>Book</span></b></a>
     <h1>Privacy policy</h1>
-    <p class="updated">Last updated 3 October 2026</p>
+    <p class="updated">Last updated 4 October 2026</p>
 
     <p>LoanBook is a private loan ledger: a single web page, at <a href="https://mpomowole.github.io/loanbook/">mpomowole.github.io/loanbook</a>, that a lender uses to record borrowers, loans and repayments. It is a record-keeping tool for the lender only. Borrowers do not use it, and it does not lend money.</p>
 
@@ -53,7 +53,7 @@ a{color:var(--accent);}
       <li>Your book — borrowers, loans, payments and notes — is saved as a file called <b>loanbook.json</b> in your own Google Drive, with dated copies in a folder called <b>LoanBook daily copies</b>.</li>
       <li>A copy is also kept in your browser’s storage on each device you use, so the book opens quickly and keeps working without a connection. So that reopening the page does not ask you to sign in again, your current Google sign-in is kept there too until it expires, within about an hour. Signing out removes both from that device.</li>
       <li>When you import loans from a spreadsheet, the file is read inside your browser. The file itself is not uploaded anywhere; only the loans and payments you choose to import are added to your book.</li>
-      <li>LoanBook has no server and no database of its own. Your book goes only between your browser and your Google account. It is never sent to the people who built LoanBook or to anyone else — the one exception is the short reminder list described below, and only if you switch the daily reminder on.</li>
+      <li>LoanBook has no server and no database of its own. Your book goes only between your browser and your Google account. It is never sent to the people who built LoanBook or to anyone else — the one exception is the short reminder list described below, and only if you switch reminder emails on.</li>
     </ul>
 
     <h2>What LoanBook does not do</h2>
@@ -63,13 +63,13 @@ a{color:var(--accent);}
       <li>It does not use your Google data for anything except storing and showing your own book.</li>
     </ul>
 
-    <h2>Optional daily reminder email</h2>
-    <p>The daily reminder is off unless you switch it on in <b>Settings → Daily reminder email</b>. While it is on:</p>
+    <h2>Optional reminder email</h2>
+    <p>Reminder emails are off unless you switch them on in <b>Settings → Reminder email</b>. While they are on:</p>
     <ul>
-      <li>LoanBook sends the LoanBook reminder service only what the email needs: the payments still owed (borrower name, phone number, loan reference, due date and amount), the total still owed, and your reminder settings (email address, time, time zone, days ahead). It sends an update whenever these change.</li>
-      <li>The reminder service runs on Google Apps Script under the LoanBook developer’s Google account. It keeps only your latest list, uses it only to send your daily email, and sends the email from the developer’s Gmail account under the name “LoanBook”, with replies going to you.</li>
+      <li>LoanBook sends the LoanBook reminder service only what the email needs: the payments still owed (borrower name, phone number, loan reference, due date and amount), the total still owed, and your reminder settings (email address, time, time zone, days of the week, what to list and how far ahead). It sends an update whenever these change.</li>
+      <li>The reminder service runs on Google Apps Script under the LoanBook developer’s Google account. It keeps only your latest list, uses it only to send your reminder emails, and sends the email from the developer’s Gmail account under the name “LoanBook”, with replies going to you.</li>
       <li>To confirm a request really comes from you, LoanBook includes a short-lived Google sign-in token. The service checks it with Google and does not keep it.</li>
-      <li>When you switch the reminder off, LoanBook tells the service to delete your list, and the emails stop.</li>
+      <li>When you switch reminder emails off, LoanBook tells the service to delete your list, and the emails stop.</li>
     </ul>
 
     <h2>Other services the page loads</h2>

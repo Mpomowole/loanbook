@@ -463,3 +463,16 @@ test('end to end: the daily copy is the book as it was before the day\'s first c
   api.addBorrower({name:'Second'}); await api.syncNow();
   assert.equal([...drive.files.values()].filter(f=>/^loanbook-2026-10-01/.test(f.name)).length, 1, 'one per day');
 });
+
+test('the dashboard counts borrowers who owe now, not everyone on the register', ()=>{
+  const api = fresh(); api.TODAY = '2026-10-01';
+  const owes = api.addBorrower({name:'Owes Now'}), paid = api.addBorrower({name:'Paid Up'}); api.addBorrower({name:'No Loan Yet'});
+  api.addLoan({borrowerId:owes.id, principal:100000, rate:5, structure:'interest-only', months:3, startDate:'2026-09-01', firstPaymentDate:'2026-10-01'});
+  api.addLoan({borrowerId:owes.id, principal:50000, rate:5, structure:'interest-only', months:3, startDate:'2026-09-15', firstPaymentDate:'2026-10-15'});
+  const done = api.addLoan({borrowerId:paid.id, principal:100000, rate:5, structure:'interest-only', months:1, startDate:'2026-08-01', firstPaymentDate:'2026-09-01'});
+  api.addPayment({loanId:done.id, borrowerId:paid.id, date:'2026-09-01', amount:105000, method:'Cash'});
+  const m = api.metrics();
+  assert.equal(m.activeBorrowers, 1, 'two loans, one person');
+  assert.equal(m.openLoans, 2);
+  assert.equal(m.borrowers, 3);
+});

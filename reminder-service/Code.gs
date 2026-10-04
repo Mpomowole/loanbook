@@ -1,10 +1,10 @@
 /**
  * LoanBook reminder service
  * =========================
- * Sends LoanBook users their daily reminder email. It is deployed ONCE, from
- * the LoanBook developer's Google account. Users never see or touch it: they
- * only switch reminders on in LoanBook → Settings and pick the email, time
- * and how many days ahead.
+ * Sends LoanBook users their reminder email. It is deployed ONCE, from the
+ * LoanBook developer's Google account. Users never see or touch it: they only
+ * switch reminders on in LoanBook → Settings and pick the email, time, days
+ * of the week, what it lists and how many days ahead.
  *
  * How it works. While a user has reminders switched on, LoanBook sends this
  * service their reminder settings and the short list of payments still owed
@@ -12,8 +12,8 @@
  * carry a Google sign-in token issued to LoanBook; it is checked with Google
  * (and the account's address read from Drive when the token does not carry
  * it) and the list is filed under that Google account. The token itself is
- * not kept. Once an hour the service emails each user who has reached their
- * chosen time and has not had today's email. Switching reminders off deletes
+ * not kept. Once an hour the service emails each user whose chosen day and
+ * time have come and who has not had today's email. Switching reminders off deletes
  * the user's list.
  *
  * DEPLOY (once, about 5 minutes, signed in to the developer's Google account)
@@ -34,7 +34,7 @@ const MAX_ITEMS = 2000;
 /* Reported in every reply, so LoanBook can tell when the deployment is out of
    date (editing the code does not change what the web app runs until a new
    version is deployed). */
-const VERSION = 3;
+const VERSION = 4;
 
 /* Installs the hourly send. Safe to run again. */
 function setup() {
@@ -48,9 +48,10 @@ function doGet() {
 }
 
 /* Body (sent as text/plain JSON, so browsers need no preflight):
-   {token, action: '' | 'test', settings: {enabled, email, hour, aheadDays,
-    everyDay, timeZone}, items: [{name, phone, loanId, dueDate, amount}],
-    owed, asOf} */
+   {token, action: '' | 'test', settings: {enabled, email, hour, days,
+    include: {overdue, today, upcoming}, aheadDays, everyDay, timeZone},
+    items: [{name, phone, loanId, dueDate, amount}], owed, asOf}
+   days are the weekdays to send on, Sunday = 0. */
 function doPost(e) {
   let req;
   try { req = JSON.parse(e.postData.contents); } catch (err) { return json_({ok: false, error: 'bad-request'}); }
@@ -85,7 +86,8 @@ function doPost(e) {
   }
 }
 
-/* Hourly: one email per user per day, at or after their chosen hour. */
+/* Hourly: at most one email per user per day, on their chosen days, at or
+   after their chosen hour. */
 function sendDue() {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) return;
@@ -103,6 +105,7 @@ function sendDue() {
       const day = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
       const hour = Number(Utilities.formatDate(now, tz, 'H'));
       if (hour < rec.settings.hour || props.getProperty('sent:' + key) === day) continue;
+      if (days_(rec.settings).indexOf(parts_(day).dow) < 0) continue;   // not one of their days
       try {
         send_(rec, day, false);
         props.setProperty('sent:' + key, day);
@@ -154,6 +157,8 @@ function clean_(req, owner) {
     settings: {
       email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email.slice(0, 120) : owner,
       hour: int(s.hour, 0, 23, 7),
+      days: days_(s),
+      include: include_(s),
       aheadDays: int(s.aheadDays, 1, 31, 7),
       everyDay: !!s.everyDay,
       timeZone: timeZone_(s.timeZone)
@@ -163,6 +168,26 @@ function clean_(req, owner) {
     asOf: Number(req.asOf) || Date.now(),
     updatedAt: Date.now()
   };
+}
+
+/* Lists saved before these choices existed mean every day, everything. */
+function days_(s) {
+  const d = (Array.isArray(s && s.days) ? s.days : []).map(Number).filter(n => n >= 0 && n <= 6 && n === Math.floor(n));
+  const out = d.filter((n, i) => d.indexOf(n) === i).sort();
+  return out.length ? out : [0, 1, 2, 3, 4, 5, 6];
+}
+function include_(s) {
+  const v = (s && s.include) || {};
+  const inc = {overdue: v.overdue !== false, today: v.today !== false, upcoming: v.upcoming !== false};
+  return inc.overdue || inc.today || inc.upcoming ? inc : {overdue: true, today: true, upcoming: true};
+}
+function daysText_(days) {
+  const k = days.join('');
+  if (days.length === 7) return 'every day';
+  if (k === '12345') return 'Monday to Friday';
+  if (k === '123456') return 'Monday to Saturday';
+  const names = [1, 2, 3, 4, 5, 6, 0].filter(d => days.indexOf(d) >= 0).map(d => DAY_NAMES_[d]);
+  return 'on ' + (names.length === 1 ? names[0] + 's' : names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1]);
 }
 
 function timeZone_(tz) {
@@ -219,7 +244,10 @@ function summarize_(rec, today) {
 }
 
 function send_(rec, today, isTest) {
-  const r = rec.settings, s = summarize_(rec, today);
+  const r = rec.settings, s = summarize_(rec, today), inc = include_(r);
+  if (!inc.overdue) s.overdue = [];
+  if (!inc.today) s.dueToday = [];
+  if (!inc.upcoming) s.upcoming = [];
   const nothing = !s.overdue.length && !s.dueToday.length && !s.upcoming.length;
   if (nothing && !r.everyDay && !isTest) return false;
 
@@ -239,7 +267,7 @@ function send_(rec, today, isTest) {
   const who = x => `<b>${esc_(x.name)}</b><br><span style="color:#8B99B2;font-size:12px;">${esc_(x.loanId)}</span>`;
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
-  let html = isTest ? `<p style="margin:0 0 18px;padding:12px 14px;background:#E3ECFB;color:#153E7B;border-radius:8px;">This is a test. Your daily summary will arrive like this every day at about ${hourLabel_(r.hour)}${r.everyDay ? '' : ' when something is due or overdue'}.</p>` : '';
+  let html = isTest ? `<p style="margin:0 0 18px;padding:12px 14px;background:#E3ECFB;color:#153E7B;border-radius:8px;">This is a test. Your summary will arrive like this ${daysText_(days_(r))} at about ${hourLabel_(r.hour)}${r.everyDay ? '' : ', when there is something to report'}.</p>` : '';
   html += `<p style="margin:0 0 18px;color:#4C5C77;">Still owed across all running loans: <b style="color:#0F1D33;">${naira_(rec.owed)}</b></p>`;
   if (s.overdue.length) html += heading_(`Overdue · ${naira_(sum(s.overdue))}`, '#AD2E3E')
     + table([{t: 'Borrower'}, {t: 'Phone'}, {t: 'Overdue', num: true}, {t: 'Late', num: true}],
@@ -250,7 +278,9 @@ function send_(rec, today, isTest) {
   if (s.upcoming.length) html += heading_(`Coming up in the next ${plural(r.aheadDays, 'day')} · ${naira_(sum(s.upcoming))}`, '#0E7C86')
     + table([{t: 'Date'}, {t: 'Borrower'}, {t: 'Phone'}, {t: 'Amount', num: true}],
       s.upcoming.map(x => `<tr><td style="${td}white-space:nowrap;">${shortDate_(x.dueDate)}</td><td style="${td}">${who(x)}</td><td style="${td}">${tel(x.phone)}</td><td style="${num}">${naira_(x.amount)}</td></tr>`));
-  if (nothing) html += `<p style="margin:0 0 6px;">Nothing is overdue, nothing is due today, and nothing falls due in the next ${plural(r.aheadDays, 'day')}.</p>`;
+  const none = [inc.overdue && 'nothing is overdue', inc.today && 'nothing is due today', inc.upcoming && `nothing falls due in the next ${plural(r.aheadDays, 'day')}`].filter(Boolean);
+  const noneText = none.length > 1 ? none.slice(0, -1).join(', ') + ' and ' + none[none.length - 1] : none[0];
+  if (nothing) html += `<p style="margin:0 0 6px;">${noneText.charAt(0).toUpperCase() + noneText.slice(1)}.</p>`;
   html += `<p style="margin:22px 0 0;"><a href="${APP_URL}" style="display:inline-block;background:#2158A6;color:#fff;text-decoration:none;font-weight:600;padding:10px 18px;border-radius:8px;">Open LoanBook</a></p>`;
 
   const line = x => `- ${x.name} (${x.loanId})${x.phone ? ', ' + x.phone : ''}: ${naira_(x.amount)}`;
@@ -258,8 +288,8 @@ function send_(rec, today, isTest) {
   if (s.overdue.length) text += `\nOVERDUE\n` + s.overdue.map(x => line(x) + `, ${plural(x.days, 'day')} late`).join('\n') + '\n';
   if (s.dueToday.length) text += `\nDUE TODAY\n` + s.dueToday.map(line).join('\n') + '\n';
   if (s.upcoming.length) text += `\nCOMING UP\n` + s.upcoming.map(x => `${shortDate_(x.dueDate)} ` + line(x)).join('\n') + '\n';
-  if (nothing) text += '\nNothing is overdue or due soon.\n';
-  text += `\nOpen LoanBook: ${APP_URL}\n\nYou get this because daily reminders are on in LoanBook → Settings. Switch them off there at any time.`;
+  if (nothing) text += `\n${noneText.charAt(0).toUpperCase() + noneText.slice(1)}.\n`;
+  text += `\nOpen LoanBook: ${APP_URL}\n\nYou get this because reminder emails are on in LoanBook → Settings → Reminder email. Change the days or switch them off there at any time.`;
 
   MailApp.sendEmail({to: r.email, replyTo: rec.owner, name: 'LoanBook', subject, body: text, htmlBody: frame_(html, today, rec.asOf, r.timeZone)});
   return true;
@@ -273,14 +303,15 @@ function frame_(inner, today, asOf, tz) {
   return `<div style="font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#0F1D33;background:#F4F7FC;padding:20px 12px;">`
     + `<div style="max-width:620px;margin:0 auto;background:#fff;border:1px solid #DCE5F3;border-radius:12px;padding:22px 20px;">`
     + `<div style="font-size:19px;font-weight:700;margin:0 0 2px;">Loan<span style="color:#2158A6;">Book</span></div>`
-    + `<div style="color:#8B99B2;font-size:13px;margin:0 0 18px;">Daily summary · ${longDate_(today)}</div>`
+    + `<div style="color:#8B99B2;font-size:13px;margin:0 0 18px;">Summary · ${longDate_(today)}</div>`
     + inner
-    + `<p style="margin:24px 0 0;padding-top:14px;border-top:1px solid #DCE5F3;color:#8B99B2;font-size:12px;">Figures from your book as of ${esc_(asOfText)}. You get this because daily reminders are switched on in LoanBook → Settings → Daily reminder email. Switch them off there at any time.</p>`
+    + `<p style="margin:24px 0 0;padding-top:14px;border-top:1px solid #DCE5F3;color:#8B99B2;font-size:12px;">Figures from your book as of ${esc_(asOfText)}. You get this because reminder emails are switched on in LoanBook → Settings → Reminder email. Change the days or switch them off there at any time.</p>`
     + `</div></div>`;
 }
 
 const MONTHS_ = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const DAYS_ = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const DAY_NAMES_ = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 function parts_(iso) { const [y, m, d] = iso.split('-').map(Number); return {y, m, d, dow: new Date(Date.UTC(y, m - 1, d)).getUTCDay()}; }
 function shortDate_(iso) { const p = parts_(iso); return `${DAYS_[p.dow]} ${p.d} ${MONTHS_[p.m - 1]}`; }
 function longDate_(iso) { const p = parts_(iso); return `${DAYS_[p.dow]} ${p.d} ${MONTHS_[p.m - 1]} ${p.y}`; }

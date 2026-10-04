@@ -138,7 +138,7 @@ test('requests without a valid LoanBook sign-in are refused', ()=>{
   assert.equal(r2.ok, false); assert.equal(r2.error, 'wrong-app');
   assert.equal(svc.post(body).error, 'not-signed-in');
   assert.equal(svc.post('not json').error, 'bad-request');
-  for(const r of [r1, r2]) assert.equal(r.version, 3, 'every reply says which version is running');
+  for(const r of [r1, r2]) assert.equal(r.version, 4, 'every reply says which version is running');
   assert.equal(svc.files.length, 0);
 });
 
@@ -152,8 +152,8 @@ test('the app explains a refusal, and spots an out-of-date reminder deployment',
     return api.meta.reminderError;
   };
   assert.match(await run({ok:false, error:'not-signed-in'}), /older version.*New version/);
-  assert.match(await run({ok:false, error:'drive-lookup-failed', detail:'403 Drive API disabled', version:3}), /confirm your Google account through Drive \(403 Drive API disabled\)/);
-  assert.match(await run({ok:false, error:'token-rejected', detail:'invalid_token', version:3}), /did not accept the sign-in/);
+  assert.match(await run({ok:false, error:'drive-lookup-failed', detail:'403 Drive API disabled', version:4}), /confirm your Google account through Drive \(403 Drive API disabled\)/);
+  assert.match(await run({ok:false, error:'token-rejected', detail:'invalid_token', version:4}), /did not accept the sign-in/);
 });
 
 test('the daily email matches the app ledger to the naira, once a day at the chosen time', async ()=>{
@@ -267,7 +267,7 @@ test("Google's occasional error page is retried for list updates, but never for 
   const page = '<!DOCTYPE html><title>Page not found</title>';
   let calls = 0;
   const flaky = answers => async ()=>{ const a = answers[Math.min(calls++, answers.length-1)]; return {text:async()=>a}; };
-  const ok = JSON.stringify({ok:true, enabled:true, items:1, version:3});
+  const ok = JSON.stringify({ok:true, enabled:true, items:1, version:4});
   const make = fetchFn => { const {api} = load({reminderUrl:URL_, fetch:fetchFn});
     api.setAuth({username:'Ade', email:'ade@example.com'}); api.loadLocal(); api.setToken('t', Date.now()+3600e3);
     api.state.reminders.enabled = true; return api; };
@@ -299,4 +299,99 @@ test('reminder settings sync between devices; the later change wins', ()=>{
   assert.equal(api.mergeBooks(b, a).book.reminders.hour, 9);
   assert.equal(api.normalizeBook({borrowers:[], loans:[]}).reminders.enabled, false, 'off unless switched on');
   assert.equal(api.normalizeBook({borrowers:[], loans:[], reminders:{enabled:true, hour:'99'}}).reminders.hour, 23);
+});
+
+/* ------------- days of the week and what the email lists ------------- */
+// 1 Oct 2026 is a Thursday.
+test('emails come only on the chosen days of the week', async ()=>{
+  const svc = service();
+  const api = app(svc, 'ade@example.com', '2026-10-01');
+  api.loadSampleData();
+  Object.assign(api.state.reminders, {enabled:true, hour:7, timeZone:'Africa/Lagos', days:[1,3,5], everyDay:true});   // Mon, Wed, Fri
+  assert.equal(await api.pushReminders(), 'ok');
+  assert.deepEqual(clone(JSON.parse(svc.live()[0].content).settings.days), [1,3,5]);
+  const sentOn = [];
+  for(const day of ['2026-10-01','2026-10-02','2026-10-03','2026-10-04','2026-10-05','2026-10-06','2026-10-07']){
+    const before = svc.sent.length;
+    svc.setNow(lagos(day, 9)); svc.ctx.sendDue();
+    if(svc.sent.length > before) sentOn.push(day);
+  }
+  assert.deepEqual(sentOn, ['2026-10-02','2026-10-05','2026-10-07'], 'Fri, Mon and Wed only');
+  assert.equal(await api.pushReminders({test:true}), 'ok', 'the test email goes on any day');
+  assert.match(svc.sent[svc.sent.length-1].htmlBody, /on Monday, Wednesday and Friday at about 7:00 am/);
+});
+
+test('the email lists only what was chosen', async ()=>{
+  const svc = service();
+  const api = app(svc, 'ade@example.com', '2026-10-01');
+  api.loadSampleData();
+  Object.assign(api.state.reminders, {enabled:true, hour:7, timeZone:'Africa/Lagos', aheadDays:30, include:{overdue:true, today:false, upcoming:false}});
+  await api.pushReminders();
+  svc.setNow(lagos('2026-10-01', 8)); svc.ctx.sendDue();
+  const m = svc.sent[0];
+  assert.match(m.htmlBody, /Overdue ·/);
+  assert.doesNotMatch(m.htmlBody, /Coming up in the next/);
+  assert.doesNotMatch(m.subject, /coming up/);
+  assert.match(m.subject, /overdue/);
+
+  // only "coming up" chosen, and nothing coming up: no email unless asked for
+  const svc2 = service();
+  const api2 = app(svc2, 'ade@example.com', '2026-10-01');
+  const b = api2.addBorrower({name:'Late Payer'});
+  api2.addLoan({borrowerId:b.id, principal:100000, rate:5, structure:'interest-only', months:1, startDate:'2026-07-01', firstPaymentDate:'2026-08-01'});
+  Object.assign(api2.state.reminders, {enabled:true, hour:7, timeZone:'Africa/Lagos', include:{overdue:false, today:false, upcoming:true}});
+  await api2.pushReminders();
+  svc2.setNow(lagos('2026-10-01', 8)); svc2.ctx.sendDue();
+  assert.equal(svc2.sent.length, 0, 'an overdue loan is not news when only "coming up" was chosen');
+  api2.state.reminders.everyDay = true;
+  await api2.pushReminders();
+  svc2.setNow(lagos('2026-10-02', 8)); svc2.ctx.sendDue();
+  assert.equal(svc2.sent.length, 1);
+  assert.match(svc2.sent[0].htmlBody, /Nothing falls due in the next 7 days\./);
+  assert.doesNotMatch(svc2.sent[0].htmlBody, /Overdue ·/);
+});
+
+test('a list saved by the previous service version still goes every day with everything', ()=>{
+  const svc = service();
+  const tok = svc.signIn('ade@example.com');
+  svc.post({token:tok, settings:{enabled:true, email:'ade@example.com', hour:7, aheadDays:7, everyDay:true, timeZone:'Africa/Lagos'},
+    items:[{name:'A', loanId:'LN-1', dueDate:'2026-09-01', amount:5000}, {name:'B', loanId:'LN-2', dueDate:'2026-10-03', amount:7000}], owed:12000});
+  const saved = JSON.parse(svc.live()[0].content).settings;
+  assert.deepEqual(clone(saved.days), [0,1,2,3,4,5,6]);
+  assert.deepEqual(clone(saved.include), {overdue:true, today:true, upcoming:true});
+  // and a file written before days existed at all
+  const f = svc.live()[0], rec = JSON.parse(f.content); delete rec.settings.days; delete rec.settings.include; f.content = JSON.stringify(rec);
+  svc.setNow(lagos('2026-10-03', 8)); svc.ctx.sendDue();   // a Saturday
+  assert.equal(svc.sent.length, 1);
+  assert.match(svc.sent[0].htmlBody, /Overdue ·[\s\S]*Due today ·/);
+});
+
+test('the app flags a reminder service that has not been updated to read the new settings', async ()=>{
+  const reply = body => async ()=>({text:async()=>JSON.stringify(body)});
+  const {api} = load({reminderUrl:URL_, fetch: reply({ok:true, enabled:true, items:0, version:3})});
+  api.setAuth({username:'Ade', email:'ade@example.com'}); api.loadLocal(); api.setToken('t', Date.now()+3600e3);
+  api.state.reminders.enabled = true;
+  assert.equal(await api.pushReminders(), 'error');
+  assert.match(api.meta.reminderError, /older version.*New version/);
+  assert.equal(api.meta.reminderSig, '', 'sent again once the service is updated');
+  assert.equal(await api.pushReminders({test:true}), 'ok', 'an older service still sends the test email');
+});
+
+test('reminder settings: days and list choices are kept tidy, and described plainly', ()=>{
+  const {api} = load();
+  const n = r => clone(api.normalizeBook({borrowers:[], loans:[], reminders:r}).reminders);
+  assert.deepEqual(n({}).days, [0,1,2,3,4,5,6], 'every day unless chosen');
+  assert.deepEqual(n({}).include, {overdue:true, today:true, upcoming:true});
+  assert.deepEqual(n({days:[5,1,1,'3',9,-1]}).days, [1,3,5]);
+  assert.deepEqual(n({days:[]}).days, [0,1,2,3,4,5,6], 'never no days at all');
+  assert.deepEqual(n({include:{overdue:false, today:false, upcoming:false}}).include, {overdue:true, today:true, upcoming:true});
+  assert.deepEqual(n({include:{today:false}}).include, {overdue:true, today:false, upcoming:true});
+  assert.equal(api.daysLabel([0,1,2,3,4,5,6]), 'every day');
+  assert.equal(api.daysLabel([1,2,3,4,5]), 'Mon–Fri');
+  assert.equal(api.daysLabel([1,3,5]), 'Mon, Wed and Fri');
+  assert.equal(api.daysLabel([0,1]), 'Mon and Sun');
+  assert.equal(api.daysLabel([1]), 'Mondays only');
+  assert.equal(api.longestGap([0,1,2,3,4,5,6]), 1);
+  assert.equal(api.longestGap([1,2,3,4,5]), 3, 'Friday to Monday');
+  assert.equal(api.longestGap([1]), 7);
 });
