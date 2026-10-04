@@ -2,7 +2,7 @@
 <html lang="en" data-theme="light">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#0F2148">
 <title>LoanBook</title>
@@ -58,6 +58,7 @@ function __gisFailed(){ window.__gis.failed = true; if(window.onGisChange) windo
 }
 *{box-sizing:border-box;}
 html,body{margin:0;padding:0;}
+html{background:var(--bg);}
 body{background:var(--bg);color:var(--ink);font-family:var(--font-body);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;}
 h1,h2,h3,h4{font-family:var(--font-body);font-weight:700;margin:0;text-wrap:balance;color:var(--ink);letter-spacing:-0.01em;}
 h1{font-size:22px;} h3{font-size:15px;}
@@ -68,7 +69,7 @@ button{font-family:var(--font-body);}
 @media (prefers-reduced-motion: reduce){*{animation-duration:0.01ms !important;transition-duration:0.01ms !important;}}
 
 /* ============ AUTH ============ */
-#authScreen{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--bg);}
+#authScreen{min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));background:var(--bg);}
 .auth-card{width:100%;max-width:400px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:30px 28px;box-shadow:var(--shadow-md);}
 .auth-brand{display:flex;align-items:center;gap:9px;margin-bottom:22px;}
 .auth-brand img{width:30px;height:30px;flex:none;}
@@ -86,7 +87,7 @@ button{font-family:var(--font-body);}
 @keyframes spin{to{transform:rotate(360deg);}}
 
 /* ============ SHELL ============ */
-#shell{display:none;min-height:100vh;}
+#shell{display:none;min-height:100vh;min-height:100dvh;}
 #shell.ready{display:flex;}
 #sidebar{width:230px;flex:none;background:var(--sidebar-bg);color:var(--sidebar-text);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;height:100dvh;overflow-y:auto;}
 .brand{padding:20px 18px 15px;display:flex;align-items:center;gap:9px;border-bottom:1px solid rgba(255,255,255,0.08);}
@@ -390,11 +391,20 @@ tr.imp-dup td{color:var(--ink-faint);}
   .letter{padding:0;max-width:100%;}
 }
 @media(max-width:900px){
-  #sidebar{position:fixed;left:-230px;top:0;bottom:0;height:auto;z-index:110;transition:left 0.2s;}   /* the visible screen, not behind the browser's bar */
-  #sidebar.open{left:0;}
-  #sidebarBackdrop.open{display:block;position:fixed;inset:0;background:rgba(8,13,25,0.5);z-index:105;}
+  /* iPhone Safari (iOS 26 and later) floats its toolbars over the page, and a
+     fixed element ends where those toolbars begin, leaving the page showing
+     through underneath. The menu and its shade therefore reach past the top
+     and bottom edges (--under-bars), with padding that keeps the menu's own
+     contents, Sign out included, on the visible screen above the toolbar.
+     A closed menu is hidden outright, so Safari never picks up its colour. */
+  :root{--under-bars:140px;}
+  #sidebar{position:fixed;left:0;top:calc(-1 * var(--under-bars));bottom:calc(-1 * var(--under-bars));height:auto;
+    width:calc(230px + env(safe-area-inset-left));padding:calc(var(--under-bars) + env(safe-area-inset-top)) 0 var(--under-bars) env(safe-area-inset-left);
+    z-index:110;transform:translateX(-100%);visibility:hidden;transition:transform 0.22s ease, visibility 0s linear 0.22s;overscroll-behavior:contain;}
+  #sidebar.open{transform:none;visibility:visible;transition:transform 0.22s ease, visibility 0s;}
+  #sidebarBackdrop.open{display:block;position:fixed;left:0;right:0;top:calc(-1 * var(--under-bars));bottom:calc(-1 * var(--under-bars));background:rgba(8,13,25,0.5);z-index:105;touch-action:none;}
   .menu-toggle{display:flex;}
-  #topbar{padding:10px 14px;gap:8px;}
+  #topbar{padding:calc(10px + env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) 10px max(14px, env(safe-area-inset-left));gap:8px;}
   .topbar-actions{gap:6px;}
   .search-wrap{max-width:none;}
   .search-wrap .search-input{font-size:16px;}
@@ -409,15 +419,15 @@ tr.imp-dup td{color:var(--ink-faint);}
   .detail-header{flex-direction:column;}
   .head-actions{width:100%;}
   .head-actions .btn{flex:1;justify-content:center;}
-  #app{padding:16px 12px 50px;}
-  .modal-overlay{padding:0;align-items:flex-start;}
+  #app{padding:16px max(12px, env(safe-area-inset-right)) calc(50px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));}
+  .modal-overlay{padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);align-items:flex-start;background:var(--surface);}
   .modal-box{max-width:none;min-height:100%;border-radius:0;border:none;}
   .modal-body{max-height:none;}
   .notif-panel{right:10px;left:10px;width:auto;top:54px;}
   .statement-figs{grid-template-columns:1fr 1fr;}
   .letter{padding:22px 18px;}
   .letter-terms .lt-k{width:130px;}
-  #toastRoot{left:12px;right:12px;bottom:14px;}
+  #toastRoot{left:max(12px, env(safe-area-inset-left));right:max(12px, env(safe-area-inset-right));bottom:calc(14px + env(safe-area-inset-bottom));}
   .toast{max-width:none;}
 }
 @media(max-width:480px){
